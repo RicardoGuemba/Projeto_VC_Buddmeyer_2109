@@ -25,7 +25,7 @@ O PRD sugere nomenclatura genérica (pc_*, plc_*). A implementação atual usa n
 | pc_x | CentroidX | CENTROID_X | REAL | PC→CLP | Coordenada X |
 | pc_y | CentroidY | CENTROID_Y | REAL | PC→CLP | Coordenada Y |
 | — | CentroidAngle | CENTROID_ANGLE | REAL | PC→CLP | Ângulo do eixo maior (graus, segmentação) |
-| — | ObjectArea | OBJECT_AREA | REAL | PC→CLP | Área da máscara (px²) |
+| — | ObjectArea | OBJECT_AREA | REAL | PC→CLP | Área da máscara (cm² por default; configurável) |
 | — | Confidence | CONFIDENCE | REAL | PC→CLP | Confiança (0-1) |
 | — | ProductDetected | PRODUCT_DETECTED | BOOL | PC→CLP | Produto detectado |
 | plc_ack (implícito) | RobotAck | ROBOT_ACK | BOOL | CLP→PC | ACK do comando |
@@ -53,7 +53,7 @@ O PRD sugere nomenclatura genérica (pc_*, plc_*). A implementação atual usa n
 | CentroidX | CENTROID_X | REAL | Coordenada X do centroide. Com ROI ativo, valores fora são projetados ao ROI. |
 | CentroidY | CENTROID_Y | REAL | Coordenada Y do centroide. Mesma regra de clamp ao ROI. |
 | CentroidAngle | CENTROID_ANGLE | REAL | Ângulo do eixo maior da embalagem (graus, `[0, 180)`), via PCA da máscara |
-| ObjectArea | OBJECT_AREA | REAL | Área da máscara em px² |
+| ObjectArea | OBJECT_AREA | REAL | Área da máscara. Default: **cm²** (`detection.plc_area_unit`). Opções: mm², px². |
 | Confidence | CONFIDENCE | REAL | Confiança (0-1) |
 | DetectionCount | DETECTION_COUNT | INT | Contador de detecções |
 | ProcessingTime | PROCESSING_TIME | REAL | Tempo de processamento (ms) |
@@ -96,6 +96,13 @@ Os nomes das tags no CLP podem ser alterados via arquivo `config/config.yaml` (s
 
 ## 6. Versão
 
-- **Documento:** v1.0  
+- **Documento:** v1.1  
 - **Alinhado ao:** PRD Correção e Aprimoramento da Comunicação PC ↔ CLP  
-- **Última atualização:** conforme implementação atual do Buddmeyer Vision v2.
+- **Última atualização:** resiliência FSM (handshake único, fault tags, coordenadas scale)
+
+### v1.1 — alterações
+
+- **VisionBusy** (`VisionCtrl_VisionBusy`): escrito pela FSM durante estados activos (envio, ACK, pick, place). CLP pode ignorar novos triggers enquanto `TRUE`.
+- **VisionError** / **SystemFault**: activados em `ERROR`, `TIMEOUT` ou falha de comunicação; limpos ao reinicializar.
+- **Coordenadas:** `CENTROID_X` / `CENTROID_Y` em **mm** no referencial robô (modo `scale` via `preprocess.roi_calibration_mm_per_px`). Clamp ao ROI antes da conversão.
+- **Handshake:** único caminho — detecções só entram na FSM em estado `DETECTING`; sem escrita periódica paralela ao CLP.

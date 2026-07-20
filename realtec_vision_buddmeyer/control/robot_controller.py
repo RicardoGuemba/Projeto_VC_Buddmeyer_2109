@@ -12,12 +12,15 @@ from typing import Optional, Dict, Any, List
 from PySide6.QtCore import QObject, Signal, QTimer
 
 from config import get_settings
-from core.logger import get_logger
-from preprocessing.roi_manager import clamp_centroid_to_roi
+from core.logger import get_logger, trace_event
+from preprocessing.roi_manager import confine_centroid_for_pick
 from core.metrics import MetricsCollector
 from core.exceptions import RobotControlError, StateTransitionError
 from communication import CIPClient
 from detection.events import DetectionEvent
+from detection.pick_selection import area_for_plc
+from coordinate.transform import get_coordinate_transform
+from core.audit_store import get_audit_store
 
 logger = get_logger("control.robot")
 
@@ -123,6 +126,23 @@ VALID_TRANSITIONS = {
 }
 
 
+# Estados em que o CLP deve ver VisionBusy=True
+_BUSY_STATES = frozenset({
+    RobotControlState.SENDING_DATA,
+    RobotControlState.WAITING_ACK,
+    RobotControlState.ACK_CONFIRMED,
+    RobotControlState.WAITING_PICK,
+    RobotControlState.WAITING_PLACE,
+    RobotControlState.WAITING_CYCLE_START,
+})
+
+# Estados activos do ciclo (RobotError deve ser verificado)
+_ACTIVE_CYCLE_STATES = _BUSY_STATES | frozenset({
+    RobotControlState.WAITING_SEND_AUTHORIZATION,
+    RobotControlState.DETECTING,
+})
+
+
 class RobotController(QObject):
     """
     Controlador de robô com máquina de estados.
@@ -204,14 +224,19 @@ class RobotController(QObject):
         
         # Flag para controlar execução única de cleanup no READY_FOR_NEXT
         self._ready_cleanup_done: bool = False
-    
+        self._vision_busy: bool = False
+
+    @classmethod
+    def _reset_instance_for_tests(cls) -> None:
+        """Reseta singleton (apenas testes)."""
+        cls._instance = None
+
+    @property
+    def accepting_detections(self) -> bool:
+        """True quando a FSM aceita novos eventos de detecção para iniciar pick."""
+        return self._state == RobotControlState.DETECTING
+
     def set_cycle_mode(self, mode: str) -> None:
-        """
-        Define o modo de ciclo.
-        
-        Args:
-            mode: "manual" ou "continuous"
-        """
         if mode not in ("manual", "continuous"):
             logger.warning("invalid_cycle_mode", mode=mode)
             return
@@ -331,12 +356,14 @@ class RobotController(QObject):
         if not self._is_running:
             return
         
-        # Evita concorrência: só agenda nova tarefa se a anterior terminou
         if self._processing:
             return
         
-        # Executa lógica do estado atual
-        asyncio.create_task(self._process_current_state())
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._process_current_state())
+        except RuntimeError:
+            logger.debug("poll_cycle_skipped_no_event_loop")
     
     async def _process_current_state(self) -> None:
         """Processa o estado atual (serializado via _processing flag)."""
@@ -344,6 +371,9 @@ class RobotController(QObject):
             return
         self._processing = True
         try:
+            if await self._check_robot_error():
+                return
+
             if self._state == RobotControlState.INITIALIZING:
                 await self._handle_initializing()
             
@@ -436,10 +466,20 @@ class RobotController(QObject):
             # Se houver muita demora, assume que a autorização é implícita
             # (pode ser que o TAG esteja com problema, como RecursionError na aphyt)
             elapsed = (datetime.now() - self._state_enter_time).total_seconds()
+            production = getattr(
+                getattr(self._settings, "reliability", None), "production_mode", False
+            )
             if elapsed > self._authorization_timeout:
+                if production:
+                    logger.warning(
+                        "authorization_timeout",
+                        timeout=self._authorization_timeout,
+                    )
+                    self._transition_to(RobotControlState.TIMEOUT)
+                    return
                 logger.warning(
                     "authorization_timeout_implicit_allow",
-                    timeout=self._authorization_timeout
+                    timeout=self._authorization_timeout,
                 )
                 self._transition_to(RobotControlState.DETECTING)
                 return
@@ -479,23 +519,29 @@ class RobotController(QObject):
             centroid_x_px = plc_data["centroid_x"]
             centroid_y_px = plc_data["centroid_y"]
 
-            # Clamp ao ROI quando exibido (evita colisão da plataforma com container)
-            roi = self._settings.preprocess.roi
-            if roi is not None and len(roi) == 4:
-                centroid_x_px, centroid_y_px = clamp_centroid_to_roi(
-                    centroid_x_px, centroid_y_px, tuple(roi)
-                )
+            centroid_x_px, centroid_y_px = confine_centroid_for_pick(
+                centroid_x_px,
+                centroid_y_px,
+                self._settings.preprocess,
+            )
 
             mm_per_px = getattr(
                 self._settings.preprocess, "roi_calibration_mm_per_px", 1.0
             ) or 1.0
-            centroid_x = centroid_x_px * mm_per_px
-            centroid_y = centroid_y_px * mm_per_px
+            transform = get_coordinate_transform()
+            pose = transform.vision_to_robot(
+                centroid_x_px,
+                centroid_y_px,
+                angle_deg=float(plc_data.get("angle_deg", 0.0) or 0.0),
+                confidence=float(plc_data.get("confidence", 0.0) or 0.0),
+            )
+            centroid_x = pose.x_mm
+            centroid_y = pose.y_mm
 
-            # Ângulo é invariante à escala (graus); área escala como mm² = px² * (mm/px)^2.
-            angle_deg = float(plc_data.get("angle_deg", 0.0) or 0.0)
+            angle_deg = pose.angle_deg
             area_px = float(plc_data.get("area_px", 0.0) or 0.0)
-            area_scaled = area_px * (mm_per_px ** 2)
+            plc_unit = getattr(self._settings.detection, "plc_area_unit", "cm2")
+            area_scaled = area_for_plc(area_px, mm_per_px, plc_unit)
 
             await self._cip_client.write_detection_result(
                 detected=plc_data["product_detected"],
@@ -511,7 +557,7 @@ class RobotController(QObject):
             self._record_step(
                 f"Coordenadas enviadas ao CLP: "
                 f"({centroid_x:.0f}, {centroid_y:.0f}) "
-                f"ang={angle_deg:.1f}° area={area_scaled:.0f} "
+                f"ang={angle_deg:.1f}° area={area_scaled:.1f}{plc_unit} "
                 f"conf={plc_data['confidence']:.0%}"
             )
             self.detection_sent.emit(self._current_detection)
@@ -604,6 +650,22 @@ class RobotController(QObject):
                 self._cycle_count += 1
                 self.cycle_completed.emit(self._cycle_count)
                 self._metrics.increment("cycle_count")
+
+                cx_mm = cy_mm = None
+                if self._current_detection and self._current_detection.detected:
+                    cx_px, cy_px = self._current_detection.centroid
+                    pose = get_coordinate_transform().vision_to_robot(cx_px, cy_px)
+                    cx_mm, cy_mm = pose.x_mm, pose.y_mm
+                try:
+                    get_audit_store().record_cycle(
+                        cycle_number=self._cycle_count,
+                        state=RobotControlState.WAITING_CYCLE_START.value,
+                        outcome="complete",
+                        centroid_x_mm=cx_mm,
+                        centroid_y_mm=cy_mm,
+                    )
+                except Exception as audit_err:
+                    logger.warning("audit_cycle_failed", error=str(audit_err))
                 
                 # Emite resumo do ciclo para a UI
                 self.cycle_summary.emit(self._cycle_steps.copy())
@@ -641,16 +703,17 @@ class RobotController(QObject):
     
     async def _handle_error(self) -> None:
         """Estado de erro."""
-        # Tenta recuperar após alguns segundos
         elapsed = (datetime.now() - self._state_enter_time).total_seconds()
         if elapsed > 5.0:
             logger.info("attempting_recovery_from_error")
+            await self._clear_fault_tags()
             self._transition_to(RobotControlState.INITIALIZING)
     
     async def _handle_timeout(self) -> None:
         """Estado de timeout."""
-        # Volta para aguardar autorização
+        await self._set_fault_tags("timeout")
         await asyncio.sleep(1.0)
+        await self._clear_fault_tags()
         self._transition_to(RobotControlState.WAITING_AUTHORIZATION)
     
     async def _handle_safety_blocked(self) -> None:
@@ -664,23 +727,78 @@ class RobotController(QObject):
     
     async def _check_safety(self) -> bool:
         """Verifica condições de segurança."""
+        production = getattr(
+            getattr(self._settings, "reliability", None), "production_mode", False
+        )
         try:
             emergency = await self._cip_client.read_tag("PlcEmergencyStop")
             if emergency:
                 logger.warning("emergency_stop_active")
                 return False
-            
+
+            gate = await self._cip_client.read_tag("SafetyGateClosed")
+            area_clear = await self._cip_client.read_tag("SafetyAreaClear")
+            curtain = await self._cip_client.read_tag("SafetyLightCurtainOK")
+
+            if not gate:
+                logger.warning("safety_gate_not_closed")
+                return False
+            if not area_clear:
+                logger.warning("safety_area_not_clear")
+                return False
+            if not curtain:
+                logger.warning("safety_light_curtain_not_ok")
+                return False
+
             return True
-        except Exception:
-            return True  # Assume seguro se não conseguir ler
+        except Exception as e:
+            logger.warning("safety_check_error", error=str(e))
+            return not production
+
+    async def _check_robot_error(self) -> bool:
+        """Verifica ROBOT_ERROR durante ciclo activo."""
+        if self._state not in _ACTIVE_CYCLE_STATES:
+            return False
+        try:
+            robot_error = await self._cip_client.read_tag("RobotError")
+            if robot_error:
+                logger.error("robot_error_detected")
+                await self._set_fault_tags("robot_error")
+                self._handle_exception("Erro reportado pelo robô (ROBOT_ERROR)")
+                return True
+        except Exception as e:
+            logger.warning("robot_error_check_failed", error=str(e))
+        return False
+
+    async def _set_fault_tags(self, reason: str) -> None:
+        """Escreve tags de falha no CLP."""
+        try:
+            await self._cip_client.set_vision_error(True)
+            await self._cip_client.set_system_fault(True)
+            get_audit_store().record_fault(reason, state=self._state.value)
+            logger.error("fault_tags_set", reason=reason)
+        except Exception as e:
+            logger.warning("set_fault_tags_failed", error=str(e))
+
+    async def _clear_fault_tags(self) -> None:
+        """Limpa tags de falha no CLP."""
+        try:
+            await self._cip_client.clear_fault_tags()
+        except Exception as e:
+            logger.warning("clear_fault_tags_failed", error=str(e))
+
+    async def _sync_vision_busy(self, state: RobotControlState) -> None:
+        """Sincroniza VisionBusy com o estado da FSM."""
+        busy = state in _BUSY_STATES
+        if busy == self._vision_busy:
+            return
+        try:
+            await self._cip_client.set_vision_busy(busy)
+            self._vision_busy = busy
+        except Exception as e:
+            logger.warning("vision_busy_sync_failed", error=str(e))
     
     def _transition_to(self, new_state: RobotControlState) -> None:
-        """
-        Transiciona para um novo estado.
-        
-        Args:
-            new_state: Novo estado
-        """
         # Valida transição
         if new_state not in VALID_TRANSITIONS.get(self._state, set()):
             if self._state != new_state:  # Permite permanecer no mesmo estado
@@ -703,13 +821,33 @@ class RobotController(QObject):
             to_state=new_state.value,
             duration_s=round(duration_s, 2),
         )
-        
+
+        trace_event(
+            "ROBOT.STATE_TRANSITION",
+            feature="robot",
+            use_case="handshake",
+            state_from=old_state.value,
+            state_to=new_state.value,
+            duration_ms=round(duration_s * 1000, 1),
+        )
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._sync_vision_busy(new_state))
+        except RuntimeError:
+            pass
+
         self.state_changed.emit(new_state.value)
     
     def _handle_exception(self, error: str) -> None:
         """Trata exceção."""
         self._last_error = error
         self.error_occurred.emit(error)
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._set_fault_tags(error))
+        except RuntimeError:
+            pass
         self._transition_to(RobotControlState.ERROR)
     
     def get_status(self) -> Dict[str, Any]:

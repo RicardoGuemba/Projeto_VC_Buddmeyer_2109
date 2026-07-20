@@ -14,6 +14,7 @@ from PIL import Image
 from PySide6.QtCore import QObject, Signal, QThread, QMutex, QWaitCondition
 
 from config import get_settings
+from coordinate.transform import get_coordinate_transform
 from core.logger import get_logger
 from core.metrics import MetricsCollector
 from core.exceptions import InferenceError
@@ -22,6 +23,7 @@ from .model_loader import ModelLoader, TASK_INSTANCE_SEGMENTATION
 from .postprocess import PostProcessor
 from .segmentation_postprocess import SegmentationPostProcessor
 from .events import DetectionResult, DetectionEvent
+from .pick_stabilizer import PickStabilizer
 
 logger = get_logger("detection.engine")
 
@@ -602,6 +604,11 @@ class InferenceEngine(QObject):
         self._worker: Optional[InferenceWorker] = None
         self._is_running = False
         self._last_result: Optional[DetectionResult] = None
+        self._pick_stabilizer = PickStabilizer(
+            stable_frames=self._settings.detection.stable_frames,
+            centroid_epsilon_px=self._settings.detection.centroid_epsilon_px,
+        )
+        self._consecutive_errors = 0
     
     def load_model(self, model_path: str = None, device: str = None) -> bool:
         """
@@ -847,33 +854,110 @@ class InferenceEngine(QObject):
     def _on_detection_ready(self, result: DetectionResult) -> None:
         """Handler para detecção pronta."""
         self._last_result = result
-        
-        # Métricas
+        self._consecutive_errors = 0
+
         self._metrics.record("inference_time", result.inference_time_ms)
         self._metrics.record("detection_count", result.count)
-        if result.has_detections:
-            best = result.best_detection
-            self._metrics.record("detection_confidence", best.confidence * 100)
-        
-        # Cria evento
-        event = DetectionEvent.from_result(result)
-        
-        # Emite sinais
+
+        det_cfg = self._settings.detection
+        mm_per_px = get_coordinate_transform().mm_per_px
+        pre_cfg = self._settings.preprocess
+        roi_enabled = bool(getattr(pre_cfg, "roi_enabled", False))
+        roi = pre_cfg.roi if roi_enabled and pre_cfg.roi else None
+
         self.detection_result.emit(result)
-        self.detection_event.emit(event)
-        
-        if result.has_detections:
-            logger.debug(
-                "detection_found",
-                count=result.count,
-                best_class=result.best_detection.class_name,
-                best_confidence=result.best_detection.confidence,
-                inference_time=result.inference_time_ms,
+
+        if not result.has_detections:
+            self._pick_stabilizer.reset()
+            event = DetectionEvent.from_result(
+                result,
+                selection_method=det_cfg.pick_selection_method,
+                confidence_weight=det_cfg.pick_confidence_weight,
+                area_weight=det_cfg.pick_area_weight,
+                mm_per_px=mm_per_px,
+                plc_area_unit=det_cfg.plc_area_unit,
+                roi_enabled=roi_enabled,
+                roi=roi,
             )
+            self.detection_event.emit(event)
+            return
+
+        pick = result.select_pick_target(
+            method=det_cfg.pick_selection_method,
+            confidence_weight=det_cfg.pick_confidence_weight,
+            area_weight=det_cfg.pick_area_weight,
+        )
+        if pick is not None:
+            self._metrics.record("detection_confidence", pick.confidence * 100)
+
+        stable_pick = self._pick_stabilizer.update(pick)
+        if stable_pick is None:
+            return
+
+        event = DetectionEvent.from_result(
+            result,
+            selection_method=det_cfg.pick_selection_method,
+            confidence_weight=det_cfg.pick_confidence_weight,
+            area_weight=det_cfg.pick_area_weight,
+            mm_per_px=mm_per_px,
+            plc_area_unit=det_cfg.plc_area_unit,
+            roi_enabled=roi_enabled,
+            roi=roi,
+        )
+
+        if event.detected:
+            pick_scaled = next(
+                (
+                    s for s in event.all_detections_scaled
+                    if abs(s["centroid_px"][0] - event.centroid[0]) < 1e-6
+                    and abs(s["centroid_px"][1] - event.centroid[1]) < 1e-6
+                ),
+                event.all_detections_scaled[0] if event.all_detections_scaled else None,
+            )
+            logger.info(
+                "pick_target_selected",
+                method=event.selection_method,
+                detection_count=event.detection_count,
+                confidence=event.confidence,
+                area_cm2=pick_scaled["area_cm2"] if pick_scaled else None,
+                centroid_mm=pick_scaled["centroid_mm"] if pick_scaled else None,
+                stabilized=True,
+            )
+
+        self.detection_event.emit(event)
+
+        logger.debug(
+            "detection_found",
+            count=result.count,
+            best_class=result.best_detection.class_name if result.best_detection else "",
+            best_confidence=result.best_detection.confidence if result.best_detection else 0,
+            inference_time=result.inference_time_ms,
+        )
     
     def _on_error(self, error: str) -> None:
         """Handler para erro."""
         logger.error("inference_worker_error", error=error)
+        self._consecutive_errors += 1
+        max_err = getattr(
+            self._settings.detection, "inference_max_consecutive_errors", 5
+        )
+        if (
+            getattr(self._settings.reliability, "inference_auto_restart", True)
+            and self._consecutive_errors >= max_err
+        ):
+            logger.warning("inference_worker_restart_scheduled", errors=self._consecutive_errors)
+            self._consecutive_errors = 0
+            self.restart_worker()
+
+    def restart_worker(self) -> bool:
+        """Reinicia o worker de inferência."""
+        if not self._loader.is_loaded:
+            return False
+        was_running = self._is_running
+        self.stop()
+        if was_running:
+            return self.start()
+        return True
 
 
 # Função de conveniência

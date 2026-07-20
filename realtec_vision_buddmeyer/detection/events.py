@@ -14,7 +14,8 @@ do bbox e score:
 - area_px         : área da máscara em pixels²
 
 Esses campos dão ao CLP os três elementos que a plataforma de pick
-espera: X, Y e Ângulo, mais um proxy de tamanho (área) para priorização.
+espera: X, Y e Ângulo, mais um proxy de tamanho (área) para priorização
+por paralaxe (objeto mais próximo da câmera = maior área aparente).
 """
 
 from dataclasses import dataclass, field
@@ -22,6 +23,14 @@ from datetime import datetime
 from typing import List, Optional, Tuple, Dict, Any
 
 import numpy as np
+
+from .pick_selection import (
+    PickSelectionMethod,
+    PlcAreaUnit,
+    scale_all_detections,
+    select_pick_target,
+)
+from preprocessing.roi_manager import clamp_centroid_to_roi
 
 
 @dataclass
@@ -201,6 +210,20 @@ class DetectionResult:
             )
         return max(self.detections, key=_score)
 
+    def select_pick_target(
+        self,
+        method: PickSelectionMethod = "area_then_conf",
+        confidence_weight: float = 1.0,
+        area_weight: float = 1.0,
+    ) -> Optional[Detection]:
+        """Seleciona alvo de pick conforme método configurável."""
+        return select_pick_target(
+            self.detections,
+            method=method,
+            confidence_weight=confidence_weight,
+            area_weight=area_weight,
+        )
+
     @property
     def count(self) -> int:
         return len(self.detections)
@@ -246,24 +269,47 @@ class DetectionEvent:
     timestamp: datetime = field(default_factory=datetime.now)
     inference_time_ms: float = 0.0
     detection_count: int = 0
+    selection_method: str = "area_then_conf"
+    all_detections_scaled: List[Dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def from_result(
         cls,
         result: DetectionResult,
         source_id: str = "main",
-        prioritize_area: bool = True,
+        selection_method: PickSelectionMethod = "area_then_conf",
+        confidence_weight: float = 1.0,
+        area_weight: float = 1.0,
+        mm_per_px: float = 1.0,
+        plc_area_unit: PlcAreaUnit = "cm2",
+        prioritize_area: Optional[bool] = None,
+        roi_enabled: bool = False,
+        roi: Optional[List[int]] = None,
     ) -> "DetectionEvent":
         """
         Cria evento a partir de DetectionResult.
 
-        prioritize_area=True: usa `best_by_priority` (confiança + área).
-        Útil para priorizar embalagens grandes no pick-and-place.
+        Seleciona o alvo de pick via `selection_method` (default: area_then_conf).
+        `prioritize_area` legado: True → weighted_score, False → confidence_only.
         """
-        if prioritize_area:
-            best = result.best_by_priority()
-        else:
-            best = result.best_detection
+        if prioritize_area is not None:
+            selection_method = (
+                "weighted_score" if prioritize_area else "confidence_only"
+            )
+
+        best = result.select_pick_target(
+            method=selection_method,
+            confidence_weight=confidence_weight,
+            area_weight=area_weight,
+        )
+
+        all_scaled = scale_all_detections(
+            result.detections,
+            mm_per_px=mm_per_px,
+            plc_area_unit=plc_area_unit,
+            roi_enabled=roi_enabled,
+            roi=roi,
+        )
 
         if best is None:
             return cls(
@@ -272,14 +318,20 @@ class DetectionEvent:
                 frame_id=result.frame_id,
                 timestamp=result.timestamp,
                 inference_time_ms=result.inference_time_ms,
+                selection_method=selection_method,
+                all_detections_scaled=all_scaled,
             )
+
+        cx, cy = best.centroid
+        if roi_enabled and roi and len(roi) == 4:
+            cx, cy = clamp_centroid_to_roi(cx, cy, tuple(roi))
 
         return cls(
             detected=True,
             class_name=best.class_name,
             confidence=best.confidence,
             bbox=best.bbox.to_list(),
-            centroid=best.centroid,
+            centroid=(cx, cy),
             angle_deg=best.angle_deg,
             area_px=best.area_px,
             source_id=source_id,
@@ -287,6 +339,8 @@ class DetectionEvent:
             timestamp=result.timestamp,
             inference_time_ms=result.inference_time_ms,
             detection_count=result.count,
+            selection_method=selection_method,
+            all_detections_scaled=all_scaled,
         )
 
     def to_plc_data(self) -> Dict[str, Any]:

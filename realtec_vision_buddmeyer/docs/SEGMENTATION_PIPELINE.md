@@ -13,9 +13,10 @@ do que o bounding box:
 2. **Ângulo do eixo maior**: orientação da embalagem em graus `[0, 180)`,
    calculada via PCA (autodecomposição da matriz de covariância dos
    pixels ativos da máscara).
-3. **Área (px²)**: contagem de pixels da máscara, usada para
-   priorização: a melhor detecção combina confiança com área
-   normalizada (`best_by_priority`).
+3. **Área (cm² na UI)**: contagem de pixels da máscara convertida via
+   calibração; usada para priorização por paralaxe (maior área aparente
+   = embalagem mais próxima da câmera). Método configurável em
+   `detection.pick_selection_method` (default: `area_then_conf`).
 
 ## Arquitetura
 
@@ -34,8 +35,8 @@ do que o bounding box:
 │     ↓  centróide, área, ângulo, elongation                       │
 │ Detection (bbox, mask, angle_deg, area_px, centroid_override)    │
 │     ↓                                                            │
-│ DetectionResult.best_by_priority (confiança + área)              │
-│     ↓                                                            │
+│ DetectionResult.select_pick_target (método configurável)           │
+│     ↓  overlay: todas as detecções; CLP: apenas o pick            │
 │ DetectionEvent.to_plc_data (dict)                                │
 │     ↓                                                            │
 │ CIPClient.write_detection_result → CLP Omron NX102               │
@@ -85,17 +86,21 @@ usa o contorno).
 - Devido à simetria de 180° de um retângulo, o valor é reduzido para
   `[0, 180)`.
 
-## Priorização (`best_by_priority`)
+## Priorização (`select_pick_target`)
 
-A plataforma de pick otimiza o deslocamento priorizando embalagens
-maiores entre as detectadas. O score usado é:
+A plataforma de pick seleciona **um** alvo entre todas as detecções do
+frame. O método é configurável (`detection.pick_selection_method`):
 
-```
-score(d) = w_conf * d.confidence + w_area * (d.effective_area_px / max_area)
-```
+| Método | Comportamento |
+|--------|---------------|
+| `area_then_conf` (default) | Maior área aparente; desempate por confiança (paralaxe) |
+| `weighted_score` | `w_conf * conf + w_area * (area / max_area)` |
+| `area_only` | Apenas maior área |
+| `confidence_only` | Apenas maior confiança |
 
-com pesos configuráveis. Isto implementa o requisito do cliente
-("conciliar confiança e maior área para otimizar deslocamento do robô").
+A UI desenha **todas** as embalagens com centroide (mm) e área (cm²);
+o alvo de pick é destacado com label "PICK". Ver
+[FEATURE_PICK_SELECTION_PARALLAX.md](FEATURE_PICK_SELECTION_PARALLAX.md).
 
 ## TAGs do CLP
 
@@ -104,10 +109,10 @@ Duas novas TAGs (tipo `REAL`, direção `WRITE`) foram adicionadas:
 | Tag lógica      | Nome PLC          | Descrição                           |
 |-----------------|-------------------|-------------------------------------|
 | `CentroidAngle` | `CENTROID_ANGLE`  | Ângulo do eixo maior, graus [0,180) |
-| `ObjectArea`    | `OBJECT_AREA`     | Área da embalagem (px² ou mm²)      |
+| `ObjectArea`    | `OBJECT_AREA`     | Área da embalagem (default **cm²**; ver `plc_area_unit`) |
 
-Quando `preprocess.roi_calibration_mm_per_px != 1`, a área é convertida
-para mm² (`area_mm2 = area_px * (mm_per_px)^2`). O ângulo é invariante
+Quando `preprocess.roi_calibration_mm_per_px != 1`, a área no CLP segue
+`detection.plc_area_unit` (`cm2`, `mm2` ou `px2`). O ângulo é invariante
 à escala e enviado como está.
 
 Todos os campos preexistentes (`CENTROID_X`, `CENTROID_Y`, `CONFIDENCE`,

@@ -293,10 +293,24 @@ class CIPClient(QObject):
                 return True
                 
             except Exception as e:
-                logger.warning("cip_connect_failed_fallback_simulated", error=str(e))
+                logger.warning("cip_connect_failed", error=str(e))
                 self._cip_logger.log_connect(self._ip, False, str(e))
+                production = getattr(
+                    getattr(self._settings, "reliability", None), "production_mode", False
+                )
+                if production:
+                    self._update_state(ConnectionStatus.ERROR)
+                    self.connection_error.emit(str(e))
+                    return False
         
-        # Fallback para modo simulado
+        # Fallback para modo simulado (bloqueado em production_mode)
+        production = getattr(
+            getattr(self._settings, "reliability", None), "production_mode", False
+        )
+        if production and not self._simulated:
+            self._update_state(ConnectionStatus.ERROR)
+            self.connection_error.emit("CLP real indisponível (production_mode)")
+            return False
         return await self._connect_simulated()
     
     async def _connect_simulated(self) -> bool:
@@ -593,6 +607,26 @@ class CIPClient(QObject):
     async def set_ready_for_next(self, ready: bool) -> bool:
         """Define pronto para próximo ciclo."""
         return await self.write_tag("VisionReadyForNext", ready)
+
+    async def set_vision_busy(self, busy: bool) -> bool:
+        """Define se o sistema de visão está processando um ciclo."""
+        return await self.write_tag("VisionBusy", busy)
+
+    async def set_vision_error(self, error: bool) -> bool:
+        """Define erro no sistema de visão."""
+        return await self.write_tag("VisionError", error)
+
+    async def set_system_fault(self, fault: bool) -> bool:
+        """Define falha do sistema."""
+        return await self.write_tag("SystemFault", fault)
+
+    async def clear_fault_tags(self) -> None:
+        """Limpa tags de falha (VisionError, SystemFault)."""
+        try:
+            await self.set_vision_error(False)
+            await self.set_system_fault(False)
+        except Exception as e:
+            logger.warning("clear_fault_tags_failed", error=str(e))
     
     def get_status(self) -> Dict[str, Any]:
         """Retorna status da conexão."""
@@ -653,9 +687,16 @@ class CIPClient(QObject):
         """Desconecta e tenta reconectar (usado por reconexão automática)."""
         self._reconnect_attempts += 1
         max_attempts = self._settings.cip.max_retries
-        if self._reconnect_attempts > max_attempts:
+        # max_retries=0 significa reconexão infinita
+        if max_attempts > 0 and self._reconnect_attempts > max_attempts:
             logger.warning("cip_reconnect_abandoned", attempts=self._reconnect_attempts)
             return
+        backoff_cap = getattr(self._settings.cip, "reconnect_backoff_cap_s", 60.0)
+        delay = min(
+            self._settings.cip.retry_interval * (2 ** min(self._reconnect_attempts - 1, 5)),
+            backoff_cap,
+        )
+        await asyncio.sleep(delay)
         await self.disconnect()
         await asyncio.sleep(0.5)
         await self.connect()
@@ -696,6 +737,11 @@ class CIPClient(QObject):
     def is_simulated(self) -> bool:
         """Verifica se está em modo simulado."""
         return self._state.is_simulated
+
+    @classmethod
+    def _reset_instance_for_tests(cls) -> None:
+        """Reseta singleton (apenas testes)."""
+        cls._instance = None
     
     @property
     def state(self) -> ConnectionState:

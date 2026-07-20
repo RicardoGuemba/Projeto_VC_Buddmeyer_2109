@@ -14,8 +14,11 @@ realtec_vision_buddmeyer/
 │   └── config.yaml                 # Configuração persistente
 ├── core/
 │   ├── logger.py                   # structlog (system + process_trace)
+│   ├── audit_store.py              # SQLite audit (ciclos, falhas)
 │   ├── metrics.py                  # Métricas em memória
 │   └── exceptions.py               # Exceções base
+├── coordinate/
+│   └── transform.py                # px→mm (modo scale)
 ├── streaming/
 │   ├── stream_manager.py           # Captura em QThread
 │   ├── source_adapters.py          # video, usb, rtsp, gige, gentl
@@ -81,7 +84,7 @@ Resumo; detalhe em [SEGMENTATION_PIPELINE.md](SEGMENTATION_PIPELINE.md).
 2. `InferenceWorker` converte para PIL, `Mask2FormerImageProcessor`, inferência no device (auto → MPS/CUDA/CPU).
 3. `SegmentationPostProcessor` → máscaras, scores, labels.
 4. `mask_geometry.compute_mask_geometry` → centróide, ângulo, área.
-5. `DetectionResult.best_by_priority` (confiança + área).
+5. `DetectionResult.select_pick_target` (método configurável; default `area_then_conf`).
 6. `DetectionEvent.to_plc_data()` → dict para CIP.
 
 **Fallback:** se o modelo não for `instance_segmentation`, usa pipeline DETR/RT-DETR (`postprocess.py`).
@@ -116,7 +119,13 @@ Resumo; detalhe em [SEGMENTATION_PIPELINE.md](SEGMENTATION_PIPELINE.md).
 | `segmentation_mask_threshold` | float | `0.5` | Binarização máscara |
 | `segmentation_overlap_mask_area_threshold` | float | `0.8` | Sobreposição máscaras |
 | `segmentation_min_mask_pixels` | int | `64` | Área mínima máscara |
-| `prioritize_area` | bool | `true` | Confiança + área na escolha |
+| `pick_selection_method` | str | `area_then_conf` | `area_then_conf`, `weighted_score`, `area_only`, `confidence_only` |
+| `pick_confidence_weight` | float | `1.0` | Peso confiança (weighted_score) |
+| `pick_area_weight` | float | `1.0` | Peso área (weighted_score) |
+| `plc_area_unit` | str | `cm2` | Unidade OBJECT_AREA: `cm2`, `mm2`, `px2` |
+| `stable_frames` | int | `3` | Frames consecutivos para confirmar pick |
+| `centroid_epsilon_px` | float | `15.0` | Tolerância px entre frames estáveis |
+| `inference_max_consecutive_errors` | int | `5` | Restart worker após N erros |
 
 ### `preprocess`
 
@@ -134,6 +143,23 @@ Resumo; detalhe em [SEGMENTATION_PIPELINE.md](SEGMENTATION_PIPELINE.md).
 | `simulated` | `false` | PLC virtual |
 | `io_retries` | `2` | Retentativas read/write |
 | `auto_reconnect` | `true` | Reconexão automática |
+| `max_retries` | `0` | `0` = infinito |
+| `reconnect_backoff_cap_s` | `60.0` | Teto backoff reconnect (s) |
+
+### `reliability`
+
+| Chave | Default | Descrição |
+|-------|---------|-----------|
+| `production_mode` | `false` | Fail-closed: sem fallback simulado, safety rigorosa |
+| `stream_auto_restart` | `true` | Recovery stream UNHEALTHY |
+| `inference_auto_restart` | `true` | Restart worker inferência |
+
+### `logging`
+
+| Chave | Default | Descrição |
+|-------|---------|-----------|
+| `max_bytes` | `50000000` | Tamanho máx. por ficheiro |
+| `backup_count` | `10` | Ficheiros rotacionados |
 
 ### `robot_control`
 

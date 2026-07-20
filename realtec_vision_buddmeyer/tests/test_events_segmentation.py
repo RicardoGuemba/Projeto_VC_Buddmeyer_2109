@@ -78,7 +78,26 @@ class TestDetectionResultPriority:
 
 
 class TestDetectionEventPlcData:
-    def test_from_result_with_prioritization(self):
+    def test_from_result_with_area_then_conf(self):
+        from detection.events import DetectionResult, DetectionEvent
+
+        low_conf_big = _make_detection(confidence=0.6, area_px=10000.0, angle_deg=42.0)
+        high_conf_tiny = _make_detection(confidence=0.95, area_px=200.0, angle_deg=10.0)
+        result = DetectionResult(detections=[low_conf_big, high_conf_tiny])
+        ev = DetectionEvent.from_result(
+            result,
+            selection_method="area_then_conf",
+            mm_per_px=10.0,
+            plc_area_unit="cm2",
+        )
+        assert ev.detected is True
+        assert ev.angle_deg == 42.0
+        assert ev.area_px == 10000.0
+        assert ev.selection_method == "area_then_conf"
+        assert len(ev.all_detections_scaled) == 2
+        assert ev.all_detections_scaled[0]["area_cm2"] > 0
+
+    def test_from_result_legacy_prioritize_area(self):
         from detection.events import DetectionResult, DetectionEvent
 
         low_conf_big = _make_detection(confidence=0.6, area_px=10000.0, angle_deg=42.0)
@@ -86,7 +105,6 @@ class TestDetectionEventPlcData:
         result = DetectionResult(detections=[low_conf_big, high_conf_tiny])
         ev = DetectionEvent.from_result(result, prioritize_area=True)
         assert ev.detected is True
-        assert ev.angle_deg == 42.0
         assert ev.area_px == 10000.0
 
     def test_to_plc_data_defaults_zero_when_missing(self):

@@ -69,8 +69,7 @@ class TestConfigurationFlow:
         qtbot.waitExposed(page)
 
         # Altera um valor
-        page._model_combo.setCurrentText("facebook/detr-resnet-101")
+        page._inference_fps.setValue(8)
         # Restaura padrões
         qtbot.mouseClick(page._reset_btn, Qt.MouseButton.LeftButton)
-        # Verifica que widgets existem após reset
-        assert page._model_combo is not None
+        assert page._inference_fps.value() == page._settings.detection.inference_fps

@@ -52,6 +52,7 @@ htmlcov/
 # === IDE e editor ===
 .idea/
 .vscode/
+.cursor/
 *.swp
 *.swo
 *~
@@ -60,6 +61,9 @@ htmlcov/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# === Documentos locais (não versionar) ===
+Manual de Marca*.pdf
 
 # === Variáveis de ambiente e segredos ===
 .env

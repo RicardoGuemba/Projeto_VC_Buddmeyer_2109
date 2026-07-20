@@ -11,6 +11,7 @@ import logging
 import sys
 import uuid
 from datetime import datetime, timezone
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional, Any, Dict
 from contextvars import ContextVar
@@ -77,6 +78,8 @@ def setup_logging(
     log_file: Optional[str] = None,
     process_trace_log_file: Optional[str] = None,
     json_format: bool = False,
+    max_bytes: int = 50_000_000,
+    backup_count: int = 10,
 ) -> None:
     """
     Configura o sistema de logging estruturado com dois trilhos.
@@ -114,7 +117,12 @@ def setup_logging(
     # System log (app/infra/erros)
     if log_file:
         Path(log_file).parent.mkdir(parents=True, exist_ok=True)
-        system_handler = logging.FileHandler(log_file, encoding="utf-8")
+        system_handler = RotatingFileHandler(
+            log_file,
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+            encoding="utf-8",
+        )
         system_handler.setLevel(log_level)
         system_handler.addFilter(lambda r: not getattr(r, "name", "").startswith("realtec.trace"))
         handlers.append(system_handler)
@@ -125,7 +133,12 @@ def setup_logging(
         process_trace_log_file = str(log_dir / "process_trace.log")
     if process_trace_log_file:
         Path(process_trace_log_file).parent.mkdir(parents=True, exist_ok=True)
-        trace_handler = logging.FileHandler(process_trace_log_file, encoding="utf-8")
+        trace_handler = RotatingFileHandler(
+            process_trace_log_file,
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+            encoding="utf-8",
+        )
         trace_handler.setLevel(log_level)
         trace_handler.addFilter(TraceLogFilter())
         handlers.append(trace_handler)

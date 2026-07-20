@@ -15,6 +15,11 @@ from .model_loader import (
 from .postprocess import PostProcessor
 from .segmentation_postprocess import SegmentationPostProcessor
 from .mask_geometry import MaskGeometry, compute_mask_geometry, major_axis_endpoints
+from .pick_selection import (
+    PickSelectionMethod,
+    select_pick_target,
+    scale_detection_metrics,
+)
 from .events import BoundingBox, Detection, DetectionResult, DetectionEvent
 
 __all__ = [
@@ -29,6 +34,9 @@ __all__ = [
     "Detection",
     "DetectionResult",
     "DetectionEvent",
+    "PickSelectionMethod",
+    "select_pick_target",
+    "scale_detection_metrics",
     "TASK_INSTANCE_SEGMENTATION",
     "TASK_OBJECT_DETECTION",
 ]

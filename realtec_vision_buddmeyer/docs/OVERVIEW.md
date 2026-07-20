@@ -1,67 +1,49 @@
-# Realtec Vision Buddmeyer — Visão Geral
+# Visão geral — Realtec Vision Buddmeyer
 
-Sistema de visão computacional industrial para automação de expedição (pick-and-place) de embalagens na linha Buddmeyer.
+Sistema de visão industrial pick-and-place: captura por **câmera USB/GenTL**, segmentação Mask2Former, handshake FSM com CLP Omron.
 
----
+**Repo:** `Projeto_VC_Buddmeyer_v1607` — ver [MIGRACAO_PROJETO_VC_BUDDMEYER_v1607.md](MIGRACAO_PROJETO_VC_BUDDMEYER_v1607.md).
 
-## Propósito
+## Fluxo operacional
 
-O PC de visão comunica com o **CLP Omron NX102** via **CIP/EtherNet-IP**, detecta embalagens no campo de visão e envia coordenadas e geometria para o robô/CLP executar o ciclo de apanha e colocação.
+1. Captura vídeo (USB ou GenTL).
+2. Inferência segmentação (FPS configurável).
+3. PickStabilizer + seleção de alvo.
+4. FSM envia coordenadas ao CLP (caminho único).
 
-## O que o sistema faz
+## Documentação
 
-1. Captura vídeo (arquivo, USB, GigE ou GenTL).
-2. Executa **segmentação de instâncias** com modelo **Mask2Former** (`model_best/`), classe alvo **Embalagem**.
-3. Calcula por detecção: **X, Y** (centróide da máscara), **ângulo** (eixo maior via PCA), **área** (px²) e **confiança**.
-4. Orquestra o handshake com o CLP (detecção → envio → ACK → pick → place → próximo ciclo).
-5. Apresenta interface desktop **PySide6** com abas Operação, Configuração e Diagnósticos.
+| Área | Documento |
+|------|-----------|
+| Operador | [GUIA_OPERADOR.md](GUIA_OPERADOR.md) |
+| Técnica | [REFERENCE.md](REFERENCE.md) |
+| CLP / tags | [TAG_CONTRACT.md](TAG_CONTRACT.md) v1.1 |
+| Integração CLP | [RUNBOOK_INTEGRACAO_CLP.md](RUNBOOK_INTEGRACAO_CLP.md) |
+| Pipeline visão | [SEGMENTATION_PIPELINE.md](SEGMENTATION_PIPELINE.md) |
+| GenTL | [MANUAL_GENTL(GIGE).md](MANUAL_GENTL(GIGE).md) |
+| Roadmap 24×7 | [AVALIACAO_24x7_PICK_PLACE.md](AVALIACAO_24x7_PICK_PLACE.md) |
 
-## Stack tecnológica
+### Features implementadas (resiliência FSM)
 
-| Camada | Tecnologia |
-|--------|------------|
-| Interface | PySide6 (Qt Widgets) |
-| Visão | PyTorch, Hugging Face Transformers, Mask2Former |
-| Imagem | OpenCV, Pillow, NumPy |
-| Câmeras industriais | Harvesters (GenTL/GigE) |
-| CLP | aphyt (CIP/EtherNet-IP) |
-| Configuração | Pydantic + YAML |
-| Logs | structlog (`realtec_vision.log`, `process_trace.log`) |
+| Etapa | Spec |
+|-------|------|
+| 1 Handshake | [FEATURE_FSM_HANDSHAKE_HARDENING.md](FEATURE_FSM_HANDSHAKE_HARDENING.md) |
+| 2 Produção | [FEATURE_PRODUCTION_MODE.md](FEATURE_PRODUCTION_MODE.md) |
+| 3 Pick estável | [FEATURE_PICK_STABILIZER.md](FEATURE_PICK_STABILIZER.md) |
+| 4 Coordenadas | [FEATURE_COORDINATE_MAPPING.md](FEATURE_COORDINATE_MAPPING.md) |
+| Pick / paralaxe | [FEATURE_PICK_SELECTION_PARALLAX.md](FEATURE_PICK_SELECTION_PARALLAX.md) |
 
-## Superfície do operador
+## UI (jul/2026)
 
-- **Operação:** iniciar/parar (F5/F6), escolher fonte de vídeo, ver detecções, painel de status, console de eventos.
-- **Configuração:** modelo, ROI, CLP, saída MJPEG, parâmetros de streaming.
-- **Diagnósticos:** métricas, logs, saúde do sistema, contadores de ciclos.
+- **Operação:** câmera USB ou GenTL; índice USB inline.
+- **Configuração → Câmera:** parâmetros da fonte activa.
+- **Configuração → Detecção:** modelo, confiança, FPS, estabilização.
+- **Configuração → Imagem:** ROI (px) + calibração mm/px.
 
-Modos de ciclo: **manual** (operador autoriza envio e novo ciclo) ou **contínuo** (automático após handshake).
+## Validação
 
-## Deployment
-
-- **SO:** macOS 12+, Ubuntu 22.04+, Windows 10/11.
-- **Python:** 3.10+ (recomendado 3.11/3.12 no box PC).
-- **Modelo:** `model_best/` versionado com **Git LFS** (~181 MB).
-- **GPU:** opcional — CUDA (Linux/Windows), MPS (Apple Silicon).
-
-## Segurança operacional
-
-- **ROI clamp:** centróide limitado à região de interesse para evitar coordenadas fora da área segura.
-- **Timeouts configuráveis:** ACK, pick, place e autorização CLP.
-- **Modo simulado:** PLC virtual para desenvolvimento sem hardware.
-- **Logs estruturados:** rastreio de IP, tags e transições de estado.
-
-## Mapa da documentação
-
-| Documento | Público | Conteúdo |
-|-----------|---------|----------|
-| [REFERENCE.md](REFERENCE.md) | Técnico / manutenção | Arquitetura, config, CLP, testes |
-| [GUIA_OPERADOR.md](GUIA_OPERADOR.md) | Operador | Uso das abas e atalhos |
-| [SEGMENTATION_PIPELINE.md](SEGMENTATION_PIPELINE.md) | Visão / ML | Pipeline Mask2Former em detalhe |
-| [TAG_CONTRACT.md](TAG_CONTRACT.md) | Integração CLP | Contrato de tags |
-| [CLONE_BOX_PC.md](CLONE_BOX_PC.md) | Deploy | Clone, LFS, smoke test |
-| [../ROTEIRO_CLIENTE.md](../ROTEIRO_CLIENTE.md) | Cliente | IP do CLP, logs, troubleshooting |
-| [MACOS_SETUP.md](MACOS_SETUP.md) / [UBUNTU_SETUP.md](UBUNTU_SETUP.md) | Instalação | Por plataforma |
-
----
-
-© Realtec — Buddmeyer Vision System v2.0
+```bash
+cd realtec_vision_buddmeyer
+python -m pytest tests/ -q
+python -m scripts.validate_handshake
+```

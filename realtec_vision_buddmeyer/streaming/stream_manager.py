@@ -6,6 +6,7 @@ Gerenciador principal de streaming de vídeo.
 import time
 from pathlib import Path
 from threading import Lock
+import time
 from typing import Optional, Dict, Any
 
 import numpy as np
@@ -165,8 +166,11 @@ class StreamManager(QObject):
         
         self._is_running = False
         self._current_frame: Optional[FrameInfo] = None
+        self._unhealthy_since: Optional[float] = None
+        self._last_source_config: Optional[Dict[str, Any]] = None
         
         # Conecta sinais de health
+        self._health.health_changed.connect(self._on_health_changed)
         self._health.health_changed.connect(self.health_changed.emit)
     
     def start(self) -> bool:
@@ -538,6 +542,30 @@ class StreamManager(QObject):
         logger.error("stream_error", error=error)
         self._health.record_drop()
         self.stream_error.emit(error)
+
+    def _on_health_changed(self, info) -> None:
+        """Auto-restart quando stream UNHEALTHY por tempo configurado."""
+        if not getattr(self._settings.reliability, "stream_auto_restart", True):
+            return
+        if info.status == HealthStatus.UNHEALTHY:
+            if self._unhealthy_since is None:
+                self._unhealthy_since = time.time()
+            threshold = getattr(
+                self._settings.streaming, "unhealthy_restart_after_s", 10.0
+            )
+            if time.time() - self._unhealthy_since >= threshold:
+                self._attempt_stream_recovery()
+        else:
+            self._unhealthy_since = None
+
+    def _attempt_stream_recovery(self) -> None:
+        """Reinicia captura após degradação prolongada."""
+        if not self._is_running:
+            return
+        logger.info("stream_recovery_attempted")
+        self._unhealthy_since = None
+        self.stop()
+        self.start()
 
 
 # Função de conveniência

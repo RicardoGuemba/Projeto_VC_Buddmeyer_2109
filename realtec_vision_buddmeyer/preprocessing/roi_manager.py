@@ -4,10 +4,31 @@ Gerenciamento de Region of Interest (ROI).
 """
 
 from dataclasses import dataclass
-from typing import Tuple, Optional, List, Union
+from typing import Tuple, Optional, List, Union, Any
 import numpy as np
 
 from PySide6.QtCore import QObject, Signal
+
+
+def is_roi_confinement_active(preprocess: Any) -> bool:
+    """True quando confinamento de centroide ao ROI está activo."""
+    if preprocess is None:
+        return False
+    if not getattr(preprocess, "roi_enabled", False):
+        return False
+    roi = getattr(preprocess, "roi", None)
+    return roi is not None and len(roi) == 4
+
+
+def confine_centroid_for_pick(
+    cx: float,
+    cy: float,
+    preprocess: Any,
+) -> Tuple[float, float]:
+    """Projeta centroide ao ROI quando confinamento está activo."""
+    if not is_roi_confinement_active(preprocess):
+        return cx, cy
+    return clamp_centroid_to_roi(cx, cy, tuple(preprocess.roi))
 
 
 def clamp_centroid_to_roi(

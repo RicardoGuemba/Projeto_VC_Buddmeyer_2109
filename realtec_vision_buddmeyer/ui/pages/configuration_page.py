@@ -131,13 +131,18 @@ class ConfigurationPage(QWidget):
         """)
         
         # Abas agrupadas por função (estado da arte)
-        self._tabs.addTab(self._create_entrada_tab(), "Entrada")
+        self._tabs.addTab(self._create_camera_tab(), "Câmera")
         self._tabs.addTab(self._create_deteccao_tab(), "Detecção")
         self._tabs.addTab(self._create_imagem_tab(), "Imagem")
         self._tabs.addTab(self._create_plc_tab(), "CLP")
         self._tabs.addTab(self._create_output_tab(), "Saída")
         
         layout.addWidget(self._tabs)
+    
+    def showEvent(self, event) -> None:
+        """Actualiza visibilidade dos grupos de câmera ao abrir a página."""
+        super().showEvent(event)
+        self._update_camera_groups_visibility()
     
     def _on_exit_clicked(self) -> None:
         """Fecha o sistema (mesmo fluxo do menu Arquivo → Sair)."""
@@ -147,8 +152,8 @@ class ConfigurationPage(QWidget):
         else:
             mw.close() if mw else None
     
-    def _create_entrada_tab(self) -> QWidget:
-        """Aba Entrada: fontes de vídeo e buffer."""
+    def _create_camera_tab(self) -> QWidget:
+        """Aba Câmera: parâmetros USB e GenTL (tipo escolhido na aba Operação)."""
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
@@ -156,27 +161,15 @@ class ConfigurationPage(QWidget):
         
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.setSpacing(20)
+        layout.setSpacing(16)
         
-        # Parâmetros de cada fonte (tipo definido na aba Operação)
-        self._video_group = QGroupBox("Arquivo de Vídeo")
-        self._video_group.setStyleSheet(CONFIG_GROUP_STYLE)
-        video_layout = QFormLayout(self._video_group)
-        
-        path_layout = QHBoxLayout()
-        self._video_path = QLineEdit()
-        self._video_path.setReadOnly(True)
-        path_layout.addWidget(self._video_path)
-        
-        browse_btn = QPushButton("Procurar...")
-        browse_btn.clicked.connect(self._browse_video)
-        path_layout.addWidget(browse_btn)
-        video_layout.addRow("Caminho:", path_layout)
-        
-        self._loop_video = QCheckBox("Loop do vídeo")
-        video_layout.addRow("", self._loop_video)
-        
-        layout.addWidget(self._video_group)
+        info = QLabel(
+            "O tipo de câmera (USB ou GenTL) é escolhido na aba Operação. "
+            "Esta secção guarda apenas os parâmetros técnicos da fonte activa."
+        )
+        info.setWordWrap(True)
+        info.setStyleSheet("color: #8b9dc3; font-size: 11px; padding: 4px 0;")
+        layout.addWidget(info)
         
         self._usb_group = QGroupBox("Câmera USB")
         self._usb_group.setStyleSheet(CONFIG_GROUP_STYLE)
@@ -184,24 +177,10 @@ class ConfigurationPage(QWidget):
         
         self._usb_index = QSpinBox()
         self._usb_index.setRange(0, 10)
+        self._usb_index.setToolTip("Índice OpenCV da câmera USB (0 = primeira)")
         usb_layout.addRow("Índice:", self._usb_index)
         
         layout.addWidget(self._usb_group)
-        
-        self._gige_group = QGroupBox("Câmera GigE")
-        self._gige_group.setStyleSheet(CONFIG_GROUP_STYLE)
-        gige_layout = QFormLayout(self._gige_group)
-        
-        self._gige_ip = QLineEdit()
-        self._gige_ip.setPlaceholderText("192.168.1.100")
-        gige_layout.addRow("IP:", self._gige_ip)
-        
-        self._gige_port = QSpinBox()
-        self._gige_port.setRange(1, 65535)
-        self._gige_port.setValue(3956)
-        gige_layout.addRow("Porta:", self._gige_port)
-        
-        layout.addWidget(self._gige_group)
         
         self._gentl_group = QGroupBox("Câmera GenTL (Omron Sentech)")
         self._gentl_group.setStyleSheet(CONFIG_GROUP_STYLE)
@@ -227,52 +206,59 @@ class ConfigurationPage(QWidget):
         self._gentl_max_dimension.setRange(0, 4096)
         self._gentl_max_dimension.setValue(1920)
         self._gentl_max_dimension.setSpecialValueText("Sem limite")
-        self._gentl_max_dimension.setToolTip("Máximo do lado maior em pixels (0 = não redimensionar). Reduz carga em câmeras 20MP+.")
+        self._gentl_max_dimension.setToolTip(
+            "Máximo do lado maior em pixels (0 = não redimensionar). "
+            "Reduz carga em câmeras 20MP+."
+        )
         gentl_layout.addRow("Dimensão máx. (px):", self._gentl_max_dimension)
         
         self._gentl_target_fps = QDoubleSpinBox()
         self._gentl_target_fps.setRange(1.0, 60.0)
         self._gentl_target_fps.setValue(15.0)
         self._gentl_target_fps.setDecimals(1)
-        self._gentl_target_fps.setToolTip("FPS alvo do stream (valores menores reduzem carga em alta resolução)")
+        self._gentl_target_fps.setToolTip(
+            "FPS alvo do stream (valores menores reduzem carga em alta resolução)"
+        )
         gentl_layout.addRow("FPS alvo:", self._gentl_target_fps)
         
         layout.addWidget(self._gentl_group)
-        
-        buffer_group = QGroupBox("Buffer de Frames")
-        buffer_group.setStyleSheet(CONFIG_GROUP_STYLE)
-        buffer_layout = QFormLayout(buffer_group)
-        
-        self._buffer_size = QSpinBox()
-        self._buffer_size.setRange(1, 100)
-        buffer_layout.addRow("Tamanho máximo:", self._buffer_size)
-        
-        layout.addWidget(buffer_group)
         
         layout.addStretch()
         scroll.setWidget(widget)
         return scroll
     
+    def _update_camera_groups_visibility(self) -> None:
+        """Mostra só o grupo relevante para a fonte activa (USB ou GenTL)."""
+        source = getattr(self._settings.streaming, "source_type", "usb")
+        is_gentl = source == "gentl"
+        self._usb_group.setVisible(not is_gentl)
+        self._gentl_group.setVisible(is_gentl)
+    
     def _create_deteccao_tab(self) -> QWidget:
-        """Aba Detecção: modelo, processamento e pré-processamento."""
+        """Aba Detecção: modelo e parâmetros de inferência activos em runtime."""
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; }")
+        
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setSpacing(16)
         
+        info = QLabel(
+            "Parâmetros usados pelo motor de inferência. "
+            "Alterações em confiança, device ou FPS exigem parar e reiniciar o sistema."
+        )
+        info.setWordWrap(True)
+        info.setStyleSheet("color: #8b9dc3; font-size: 11px; padding: 4px 0;")
+        layout.addWidget(info)
+        
         model_group = QGroupBox("Modelo")
         model_group.setStyleSheet(CONFIG_GROUP_STYLE)
         model_layout = QFormLayout(model_group)
-        self._model_combo = QComboBox()
-        self._model_combo.setEditable(True)
-        self._model_combo.addItems([
-            "PekingU/rtdetr_r50vd",
-            "PekingU/rtdetr_r101vd",
-            "facebook/detr-resnet-50",
-            "facebook/detr-resnet-101",
-        ])
-        model_layout.addRow("Modelo:", self._model_combo)
         path_layout = QHBoxLayout()
         self._model_path = QLineEdit()
+        self._model_path.setPlaceholderText("model_best (pasta local Mask2Former)")
         path_layout.addWidget(self._model_path)
         browse_model_btn = QPushButton("Procurar...")
         browse_model_btn.clicked.connect(self._browse_model)
@@ -280,7 +266,7 @@ class ConfigurationPage(QWidget):
         model_layout.addRow("Caminho local:", path_layout)
         layout.addWidget(model_group)
         
-        params_group = QGroupBox("Parâmetros")
+        params_group = QGroupBox("Inferência")
         params_group.setStyleSheet(CONFIG_GROUP_STYLE)
         params_layout = QFormLayout(params_group)
         self._device_combo = QComboBox()
@@ -301,9 +287,61 @@ class ConfigurationPage(QWidget):
         self._inference_fps = QSpinBox()
         self._inference_fps.setRange(1, 60)
         params_layout.addRow("FPS inferência:", self._inference_fps)
+        self._stable_frames = QSpinBox()
+        self._stable_frames.setRange(1, 30)
+        self._stable_frames.setToolTip(
+            "Frames consecutivos com o mesmo alvo antes de emitir evento à FSM"
+        )
+        params_layout.addRow("Frames estáveis:", self._stable_frames)
+        self._centroid_epsilon = QDoubleSpinBox()
+        self._centroid_epsilon.setRange(1.0, 200.0)
+        self._centroid_epsilon.setDecimals(1)
+        self._centroid_epsilon.setSuffix(" px")
+        self._centroid_epsilon.setToolTip(
+            "Tolerância de movimento do centroide entre frames estáveis"
+        )
+        params_layout.addRow("Epsilon centroide:", self._centroid_epsilon)
         layout.addWidget(params_group)
+
+        pick_group = QGroupBox("Seleção pick-and-place")
+        pick_group.setStyleSheet(CONFIG_GROUP_STYLE)
+        pick_layout = QFormLayout(pick_group)
+        self._pick_method_combo = QComboBox()
+        self._pick_method_combo.addItem(
+            "Área + confiança (paralaxe) — default",
+            "area_then_conf",
+        )
+        self._pick_method_combo.addItem("Score ponderado (conf + área)", "weighted_score")
+        self._pick_method_combo.addItem("Apenas maior área", "area_only")
+        self._pick_method_combo.addItem("Apenas maior confiança", "confidence_only")
+        self._pick_method_combo.setToolTip(
+            "Paralaxe: embalagens mais próximas da câmera aparecem maiores. "
+            "O método 'Área + confiança' prioriza maior área aparente e "
+            "usa confiança como desempate."
+        )
+        pick_layout.addRow("Método:", self._pick_method_combo)
+        self._pick_conf_weight = QDoubleSpinBox()
+        self._pick_conf_weight.setRange(0.0, 10.0)
+        self._pick_conf_weight.setSingleStep(0.1)
+        self._pick_conf_weight.setValue(1.0)
+        pick_layout.addRow("Peso confiança:", self._pick_conf_weight)
+        self._pick_area_weight = QDoubleSpinBox()
+        self._pick_area_weight.setRange(0.0, 10.0)
+        self._pick_area_weight.setSingleStep(0.1)
+        self._pick_area_weight.setValue(1.0)
+        pick_layout.addRow("Peso área:", self._pick_area_weight)
+        self._plc_area_unit_combo = QComboBox()
+        self._plc_area_unit_combo.addItem("cm²", "cm2")
+        self._plc_area_unit_combo.addItem("mm²", "mm2")
+        self._plc_area_unit_combo.addItem("px²", "px2")
+        self._plc_area_unit_combo.setToolTip("Unidade enviada na tag OBJECT_AREA ao CLP")
+        pick_layout.addRow("Área no CLP:", self._plc_area_unit_combo)
+        self._pick_method_combo.currentIndexChanged.connect(self._on_pick_method_changed)
+        self._on_pick_method_changed()
+        layout.addWidget(pick_group)
         layout.addStretch()
-        return widget
+        scroll.setWidget(widget)
+        return scroll
     
     def _create_imagem_tab(self) -> QWidget:
         """Aba Imagem: ROI e perfil de pré-processamento."""
@@ -343,6 +381,12 @@ class ConfigurationPage(QWidget):
         roi_coords.addWidget(self._roi_h)
         roi_layout.addRow("Coordenadas (x, y, largura, altura) [px]:", roi_coords)
 
+        self._roi_enabled = QCheckBox("Ativar confinamento ROI")
+        self._roi_enabled.setToolTip(
+            "Limita o centroide enviado ao CLP e exibido no overlay à região definida"
+        )
+        roi_layout.addRow("", self._roi_enabled)
+
         roi_default_btn = QPushButton("Padrão (25% área central)")
         roi_default_btn.setToolTip("Define ROI como 25% da área centralizada (ex.: 640x480)")
         roi_default_btn.clicked.connect(self._set_default_roi)
@@ -358,18 +402,6 @@ class ConfigurationPage(QWidget):
         roi_layout.addRow("Centroide (mm/px):", self._centroid_mm_per_px)
 
         layout.addWidget(roi_group)
-        
-        profile_group = QGroupBox("Perfil de Imagem")
-        profile_group.setStyleSheet(CONFIG_GROUP_STYLE)
-        profile_layout = QFormLayout(profile_group)
-        self._profile_combo = QComboBox()
-        self._profile_combo.addItems([
-            "default", "bright", "dark",
-            "high_contrast", "low_contrast",
-            "enhanced", "smooth", "sharp",
-        ])
-        profile_layout.addRow("Perfil:", self._profile_combo)
-        layout.addWidget(profile_group)
         layout.addStretch()
         return widget
     
@@ -503,25 +535,35 @@ class ConfigurationPage(QWidget):
         """Carrega configurações atuais."""
         s = self._settings
         
-        # Vídeo (tipo definido na aba Operação)
-        self._video_path.setText(s.streaming.video_path)
-        self._loop_video.setChecked(s.streaming.loop_video)
+        # Câmera (tipo definido na aba Operação)
         self._usb_index.setValue(s.streaming.usb_camera_index)
-        self._gige_ip.setText(s.streaming.gige_ip)
-        self._gige_port.setValue(s.streaming.gige_port)
         self._gentl_cti_path.setText(s.streaming.gentl_cti_path)
         self._gentl_device_index.setValue(s.streaming.gentl_device_index)
         self._gentl_max_dimension.setValue(s.streaming.gentl_max_dimension)
         self._gentl_target_fps.setValue(s.streaming.gentl_target_fps)
-        self._buffer_size.setValue(s.streaming.max_frame_buffer_size)
+        self._update_camera_groups_visibility()
         
         # Modelo
-        self._model_combo.setCurrentText(s.detection.default_model)
         self._model_path.setText(s.detection.model_path)
         self._device_combo.setCurrentText(s.detection.device)
         self._confidence_slider.setValue(int(s.detection.confidence_threshold * 100))
         self._max_detections.setValue(s.detection.max_detections)
         self._inference_fps.setValue(s.detection.inference_fps)
+        self._stable_frames.setValue(getattr(s.detection, "stable_frames", 3))
+        self._centroid_epsilon.setValue(
+            getattr(s.detection, "centroid_epsilon_px", 15.0)
+        )
+
+        method = getattr(s.detection, "pick_selection_method", "area_then_conf")
+        idx = self._pick_method_combo.findData(method)
+        self._pick_method_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self._pick_conf_weight.setValue(s.detection.pick_confidence_weight)
+        self._pick_area_weight.setValue(s.detection.pick_area_weight)
+        unit_idx = self._plc_area_unit_combo.findData(
+            getattr(s.detection, "plc_area_unit", "cm2")
+        )
+        self._plc_area_unit_combo.setCurrentIndex(unit_idx if unit_idx >= 0 else 0)
+        self._on_pick_method_changed()
         
         # Imagem (ROI em px, calibração centroide mm/px)
         if s.preprocess.roi and len(s.preprocess.roi) == 4:
@@ -534,10 +576,10 @@ class ConfigurationPage(QWidget):
         self._roi_y.setValue(px_vals[1])
         self._roi_w.setValue(px_vals[2])
         self._roi_h.setValue(px_vals[3])
+        self._roi_enabled.setChecked(bool(getattr(s.preprocess, "roi_enabled", True)))
         self._centroid_mm_per_px.setValue(
             getattr(s.preprocess, "roi_calibration_mm_per_px", 1.0)
         )
-        self._profile_combo.setCurrentText(s.preprocess.profile)
         
         # CLP
         self._plc_ip.setText(s.cip.ip)
@@ -556,25 +598,25 @@ class ConfigurationPage(QWidget):
         """Salva configurações."""
         s = self._settings
         
-        # Vídeo (source_type definido na aba Operação)
-        s.streaming.video_path = self._video_path.text()
-        s.streaming.loop_video = self._loop_video.isChecked()
+        # Câmera (source_type definido na aba Operação)
         s.streaming.usb_camera_index = self._usb_index.value()
-        s.streaming.gige_ip = self._gige_ip.text()
-        s.streaming.gige_port = self._gige_port.value()
         s.streaming.gentl_cti_path = self._gentl_cti_path.text()
         s.streaming.gentl_device_index = self._gentl_device_index.value()
         s.streaming.gentl_max_dimension = self._gentl_max_dimension.value()
         s.streaming.gentl_target_fps = self._gentl_target_fps.value()
-        s.streaming.max_frame_buffer_size = self._buffer_size.value()
         
         # Modelo
-        s.detection.default_model = self._model_combo.currentText()
         s.detection.model_path = self._model_path.text()
         s.detection.device = self._device_combo.currentText()
         s.detection.confidence_threshold = self._confidence_slider.value() / 100
         s.detection.max_detections = self._max_detections.value()
         s.detection.inference_fps = self._inference_fps.value()
+        s.detection.stable_frames = self._stable_frames.value()
+        s.detection.centroid_epsilon_px = self._centroid_epsilon.value()
+        s.detection.pick_selection_method = self._pick_method_combo.currentData()
+        s.detection.pick_confidence_weight = self._pick_conf_weight.value()
+        s.detection.pick_area_weight = self._pick_area_weight.value()
+        s.detection.plc_area_unit = self._plc_area_unit_combo.currentData()
         
         # Imagem (ROI em px, calibração centroide mm/px)
         px_vals = [
@@ -584,8 +626,8 @@ class ConfigurationPage(QWidget):
             max(1, int(round(self._roi_h.value()))),
         ]
         s.preprocess.roi = px_vals
+        s.preprocess.roi_enabled = self._roi_enabled.isChecked()
         s.preprocess.roi_calibration_mm_per_px = self._centroid_mm_per_px.value()
-        s.preprocess.profile = self._profile_combo.currentText()
         
         # CLP
         s.cip.ip = self._plc_ip.text()
@@ -661,17 +703,6 @@ class ConfigurationPage(QWidget):
         if file_path:
             self._gentl_cti_path.setText(file_path)
     
-    def _browse_video(self) -> None:
-        """Abre diálogo para selecionar vídeo."""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Selecionar Vídeo",
-            "",
-            "Vídeos (*.mp4 *.avi *.mov *.mkv);;Todos (*)",
-        )
-        if file_path:
-            self._video_path.setText(file_path)
-    
     def _browse_model(self) -> None:
         """Abre diálogo para selecionar modelo."""
         dir_path = QFileDialog.getExistingDirectory(
@@ -681,6 +712,12 @@ class ConfigurationPage(QWidget):
         if dir_path:
             self._model_path.setText(dir_path)
     
+    def _on_pick_method_changed(self) -> None:
+        """Mostra pesos apenas para o método weighted_score."""
+        is_weighted = self._pick_method_combo.currentData() == "weighted_score"
+        self._pick_conf_weight.setEnabled(is_weighted)
+        self._pick_area_weight.setEnabled(is_weighted)
+
     def _on_confidence_changed(self, value: int) -> None:
         """Handler para mudança de confiança."""
         self._confidence_label.setText(f"{value}%")

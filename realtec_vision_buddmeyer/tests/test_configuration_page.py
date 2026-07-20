@@ -28,7 +28,7 @@ class TestConfigurationPage:
     def test_has_all_tabs(self, config_page):
         """Todas as abas esperadas existem."""
         tab_names = [config_page._tabs.tabText(i) for i in range(config_page._tabs.count())]
-        assert "Entrada" in tab_names
+        assert "Câmera" in tab_names
         assert "Detecção" in tab_names
         assert "Imagem" in tab_names
         assert "CLP" in tab_names
@@ -77,6 +77,7 @@ class TestConfigurationPage:
         assert config_page._roi_y is not None
         assert config_page._roi_w is not None
         assert config_page._roi_h is not None
+        assert config_page._roi_enabled is not None
 
     def test_roi_in_pixels(self, config_page):
         """ROI é sempre em pixels; coordenadas X,Y,W,H são inteiros."""

@@ -55,6 +55,8 @@ def main() -> int:
     setup_logging(
         level=settings.log_level,
         log_file=settings.log_file,
+        max_bytes=settings.logging.max_bytes,
+        backup_count=settings.logging.backup_count,
     )
     
     logger = get_logger("main")

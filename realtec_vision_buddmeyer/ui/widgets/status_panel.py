@@ -15,7 +15,9 @@ from PySide6.QtGui import QFont, QColor
 from detection.events import DetectionEvent
 from communication.connection_state import ConnectionState, ConnectionStatus
 from config.settings import get_settings
+from coordinate.transform import get_coordinate_transform
 from control.robot_controller import RobotControlState
+from ui.overlay_constants import format_centroid_metrics_summary
 
 
 class StatusIndicator(QFrame):
@@ -182,52 +184,57 @@ class StatusPanel(QWidget):
         self._det_confidence = QLabel("---")
         self._det_confidence.setStyleSheet("color: #28a745; font-size: 11px;")
         detection_layout.addWidget(self._det_confidence, 1, 1)
-        
-        detection_layout.addWidget(QLabel("Centroide X:"), 2, 0)
-        self._det_x = QLabel("---")
-        self._det_x.setStyleSheet("color: #e5e7eb; font-size: 11px;")
-        detection_layout.addWidget(self._det_x, 2, 1)
-        
-        detection_layout.addWidget(QLabel("Centroide Y:"), 3, 0)
-        self._det_y = QLabel("---")
-        self._det_y.setStyleSheet("color: #e5e7eb; font-size: 11px;")
-        detection_layout.addWidget(self._det_y, 3, 1)
 
-        detection_layout.addWidget(QLabel("Ângulo (°):"), 4, 0)
-        self._det_angle = QLabel("---")
-        self._det_angle.setStyleSheet("color: #ffcc00; font-weight: bold; font-size: 11px;")
-        detection_layout.addWidget(self._det_angle, 4, 1)
+        detection_layout.addWidget(QLabel("Centroide:"), 2, 0, Qt.AlignTop)
+        self._det_centroid = QLabel("---")
+        self._det_centroid.setStyleSheet("color: #e5e7eb; font-size: 10px;")
+        self._det_centroid.setWordWrap(True)
+        detection_layout.addWidget(self._det_centroid, 2, 1)
 
-        detection_layout.addWidget(QLabel("Área:"), 5, 0)
-        self._det_area = QLabel("---")
-        self._det_area.setStyleSheet("color: #e5e7eb; font-size: 11px;")
-        detection_layout.addWidget(self._det_area, 5, 1)
+        detection_layout.addWidget(QLabel("Outros:"), 3, 0, Qt.AlignTop)
+        self._det_others = QLabel("---")
+        self._det_others.setStyleSheet("color: #c5c9ce; font-size: 10px;")
+        self._det_others.setWordWrap(True)
+        detection_layout.addWidget(self._det_others, 3, 1)
 
         layout.addWidget(detection_group)
         
-        # ROI: apenas ligar/desligar (configuração em Configuração → Imagem)
+        # ROI: dimensões editáveis (também em Configuração → Imagem)
         roi_group = QGroupBox("ROI")
         roi_group.setStyleSheet(system_group.styleSheet())
-        roi_group.setToolTip("Liga ou desliga a região de interesse. Configure coordenadas em Configuração → Imagem.")
+        roi_group.setToolTip(
+            "Região de interesse em pixels. Afecta overlay visual e clamp do centroide enviado ao CLP."
+        )
         roi_layout = QFormLayout(roi_group)
         self._roi_enabled = QCheckBox("Ativar ROI")
+        self._roi_enabled.setToolTip(
+            "Exibe a região no vídeo e confina o centroide do pick ao retângulo"
+        )
         roi_layout.addRow("", self._roi_enabled)
         self._roi_x = QSpinBox()
         self._roi_x.setRange(0, 9999)
+        self._roi_x.setToolTip("X (px)")
         self._roi_y = QSpinBox()
         self._roi_y.setRange(0, 9999)
+        self._roi_y.setToolTip("Y (px)")
         self._roi_w = QSpinBox()
         self._roi_w.setRange(1, 9999)
+        self._roi_w.setToolTip("Largura (px)")
         self._roi_h = QSpinBox()
         self._roi_h.setRange(1, 9999)
-        roi_hidden = QWidget()
-        roi_hidden.setVisible(False)
-        hl = QHBoxLayout(roi_hidden)
-        hl.addWidget(self._roi_x)
-        hl.addWidget(self._roi_y)
-        hl.addWidget(self._roi_w)
-        hl.addWidget(self._roi_h)
-        roi_layout.addRow("", roi_hidden)
+        self._roi_h.setToolTip("Altura (px)")
+        roi_coords = QHBoxLayout()
+        roi_coords.addWidget(QLabel("X"))
+        roi_coords.addWidget(self._roi_x)
+        roi_coords.addWidget(QLabel("Y"))
+        roi_coords.addWidget(self._roi_y)
+        roi_coords.addWidget(QLabel("W"))
+        roi_coords.addWidget(self._roi_w)
+        roi_coords.addWidget(QLabel("H"))
+        roi_coords.addWidget(self._roi_h)
+        roi_layout.addRow("Dimensões (px):", roi_coords)
+        for spin in (self._roi_x, self._roi_y, self._roi_w, self._roi_h):
+            spin.valueChanged.connect(lambda _=0: self.roi_changed.emit())
         self._roi_enabled.stateChanged.connect(lambda: self.roi_changed.emit())
         layout.addWidget(roi_group)
         
@@ -298,38 +305,82 @@ class StatusPanel(QWidget):
     
     @Slot(object)
     def update_detection(self, event: DetectionEvent) -> None:
-        """Atualiza informações da detecção (centroide em px ou mm conforme calibração)."""
+        """Atualiza informações do pick selecionado e lista de outros objetos."""
         if event.detected:
-            self._det_class.setText(event.class_name)
+            self._det_class.setText(f"{event.class_name} (PICK)")
             self._det_confidence.setText(f"{event.confidence:.1%}")
-            cx_px, cy_px = event.centroid[0], event.centroid[1]
-            mm_per_px = getattr(
-                get_settings().preprocess, "roi_calibration_mm_per_px", 1.0
-            ) or 1.0
-            cx, cy = cx_px * mm_per_px, cy_px * mm_per_px
-            self._det_x.setText(f"{cx:.1f}")
-            self._det_y.setText(f"{cy:.1f}")
 
-            angle = getattr(event, "angle_deg", None)
-            if angle is not None:
-                self._det_angle.setText(f"{float(angle):.1f}")
-            else:
-                self._det_angle.setText("—")
+            pick_scaled = None
+            others_scaled = []
+            if getattr(event, "all_detections_scaled", None):
+                cx_px, cy_px = event.centroid[0], event.centroid[1]
+                for scaled in event.all_detections_scaled:
+                    scx, scy = scaled["centroid_px"]
+                    if (
+                        abs(scx - cx_px) < 1e-3
+                        and abs(scy - cy_px) < 1e-3
+                    ):
+                        pick_scaled = scaled
+                    else:
+                        others_scaled.append(scaled)
 
-            area_px = getattr(event, "area_px", None)
-            if area_px is not None:
-                area_scaled = float(area_px) * (mm_per_px ** 2)
-                unit = "mm²" if abs(mm_per_px - 1.0) > 1e-6 else "px²"
-                self._det_area.setText(f"{area_scaled:.0f} {unit}")
+            if pick_scaled:
+                cx_px, cy_px = pick_scaled["centroid_px"]
+                area_px = pick_scaled.get("area_px")
+                if area_px is None:
+                    mm = get_coordinate_transform().mm_per_px
+                    area_px = pick_scaled["area_cm2"] * 100.0 / (mm ** 2)
+                self._det_centroid.setText(
+                    format_centroid_metrics_summary(
+                        cx_px,
+                        cy_px,
+                        float(area_px),
+                        pick_scaled.get("angle_deg"),
+                        get_coordinate_transform().mm_per_px,
+                        is_pick=True,
+                    )
+                )
             else:
-                self._det_area.setText("—")
+                mm_per_px = get_coordinate_transform().mm_per_px
+                cx_px, cy_px = event.centroid[0], event.centroid[1]
+                area_px = getattr(event, "area_px", None) or 0.0
+                self._det_centroid.setText(
+                    format_centroid_metrics_summary(
+                        cx_px,
+                        cy_px,
+                        float(area_px),
+                        getattr(event, "angle_deg", None),
+                        mm_per_px,
+                        is_pick=True,
+                    )
+                )
+
+            if others_scaled:
+                lines = []
+                mm_per_px = get_coordinate_transform().mm_per_px
+                for i, o in enumerate(others_scaled, 1):
+                    ox_px, oy_px = o["centroid_px"]
+                    area_px = o.get("area_px")
+                    if area_px is None:
+                        area_px = o["area_cm2"] * 100.0 / (mm_per_px ** 2)
+                    summary = format_centroid_metrics_summary(
+                        ox_px,
+                        oy_px,
+                        float(area_px),
+                        o.get("angle_deg"),
+                        mm_per_px,
+                    )
+                    lines.append(f"#{i}: {summary} {o['confidence']:.0%}")
+                self._det_others.setText("\n".join(lines))
+            elif event.detection_count > 1:
+                self._det_others.setText(f"{event.detection_count - 1} objeto(s)")
+            else:
+                self._det_others.setText("—")
         else:
             self._det_class.setText("---")
             self._det_confidence.setText("---")
-            self._det_x.setText("---")
-            self._det_y.setText("---")
-            self._det_angle.setText("---")
-            self._det_area.setText("---")
+            self._det_centroid.setText("---")
+            self._det_others.setText("---")
     
     def set_roi(self, enabled: bool, x: int = 0, y: int = 0, w: int = 640, h: int = 480) -> None:
         """Define ROI (bloqueia sinais para evitar loop)."""
@@ -350,15 +401,13 @@ class StatusPanel(QWidget):
         self._roi_h.blockSignals(False)
     
     def get_roi(self) -> Tuple[bool, List[int]]:
-        """Retorna (enabled, [x, y, w, h])."""
-        if self._roi_enabled.isChecked():
-            return True, [
-                self._roi_x.value(),
-                self._roi_y.value(),
-                self._roi_w.value(),
-                self._roi_h.value(),
-            ]
-        return False, [0, 0, 640, 480]
+        """Retorna (enabled, [x, y, w, h]). Dimensões vêm sempre dos spinboxes."""
+        return self._roi_enabled.isChecked(), [
+            self._roi_x.value(),
+            self._roi_y.value(),
+            self._roi_w.value(),
+            self._roi_h.value(),
+        ]
     
     def set_last_error(self, error: str) -> None:
         """Define último erro exibido (RF-06: UI informativa)."""
@@ -366,6 +415,30 @@ class StatusPanel(QWidget):
             self._last_error.setText("—")
         else:
             self._last_error.setText(error[:80] + ("…" if len(error) > 80 else ""))
+
+    def update_system_health(
+        self,
+        stream_health: str = "",
+        plc_status: str = "",
+        fsm_state: str = "",
+        simulated: bool = False,
+        production_mode: bool = False,
+    ) -> None:
+        """Banner consolidado de saúde operacional."""
+        parts = []
+        if stream_health:
+            parts.append(f"Stream:{stream_health}")
+        if plc_status:
+            parts.append(f"CLP:{plc_status}")
+        if fsm_state:
+            parts.append(f"FSM:{fsm_state}")
+        if simulated:
+            parts.append("SIMULADO")
+        if production_mode:
+            parts.append("PRODUÇÃO")
+        summary = " | ".join(parts) if parts else "OK"
+        color = "red" if (production_mode and simulated) else ("yellow" if simulated else "green")
+        self._system_status.set_status(summary, color=color)
     
     def set_latency_ms(self, ms: Optional[float]) -> None:
         """Define latência CIP em ms (RF-06: latência aproximada)."""

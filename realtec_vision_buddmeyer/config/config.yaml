@@ -2,7 +2,7 @@ log_level: INFO
 log_file: logs/realtec_vision.log
 streaming:
   source_type: usb
-  video_path: videos/Colcha.mp4
+  video_path: videos/test.mp4
   usb_camera_index: 0
   rtsp_url: ''
   gige_ip: ''
@@ -10,45 +10,49 @@ streaming:
   gentl_cti_path: ''
   gentl_device_index: 0
   gentl_max_dimension: 1920
-  gentl_target_fps: 4.0
+  gentl_target_fps: 15.0
   max_frame_buffer_size: 30
   loop_video: true
+  unhealthy_restart_after_s: 10.0
 detection:
   model_path: model_best
   default_model: model_best
-  # confidence_threshold é aplicado por post_process_instance_segmentation do
-  # Mask2Former. Valores típicos do estado da arte: 0.5 (default) a 0.7.
-  # Subir para 0.71 só com cena bem controlada e iluminação calibrada — caso
-  # contrário, todas as queries reais ficam abaixo do corte e o sistema
-  # silencia. Use os logs "inference_diagnostic" (INFO) para calibrar.
-  confidence_threshold: 0.5
+  confidence_threshold: 0.61
   max_detections: 10
   target_classes:
-    - Embalagem
-  inference_fps: 4
+  - Embalagem
+  inference_fps: 15
   device: auto
   segmentation_mask_threshold: 0.5
   segmentation_overlap_mask_area_threshold: 0.8
   segmentation_min_mask_pixels: 64
-  prioritize_area: true
+  pick_selection_method: area_then_conf
+  pick_confidence_weight: 1.0
+  pick_area_weight: 1.0
+  plc_area_unit: cm2
+  stable_frames: 3
+  centroid_epsilon_px: 15.0
+  inference_max_consecutive_errors: 5
 preprocess:
-  profile: bright
+  profile: default
   brightness: 0.0
   contrast: 0.0
   roi:
-  - 181
-  - 101
-  - 277
-  - 277
+  - 155
+  - 117
+  - 337
+  - 282
+  roi_enabled: false
   roi_unit: px
-  roi_calibration_mm_per_px: 10.0
+  roi_calibration_mm_per_px: 1.0
 cip:
-  ip: 192.168.1.10
+  ip: 187.99.124.229
   port: 44818
   connection_timeout: 10.0
   timeout_ms: 10000
   retry_interval: 2.0
   max_retries: 3
+  reconnect_backoff_cap_s: 60.0
   io_retries: 2
   simulated: false
   heartbeat_interval: 1.0
@@ -59,6 +63,13 @@ robot_control:
   place_timeout: 30.0
   authorization_timeout: 30.0
   bypass_authorization: false
+reliability:
+  production_mode: false
+  stream_auto_restart: true
+  inference_auto_restart: true
+logging:
+  max_bytes: 50000000
+  backup_count: 10
 tags:
   VisionReady: VisionCtrl_VisionReady
   VisionBusy: VisionCtrl_VisionBusy
@@ -94,6 +105,6 @@ tags:
   SafetyLightCurtainOK: Safety_LightCurtainOK
   SafetyEmergencyStop: Safety_EmergencyStop
 output:
-  rtsp_enabled: true
+  rtsp_enabled: false
   http_port: 8080
   http_path: /stream

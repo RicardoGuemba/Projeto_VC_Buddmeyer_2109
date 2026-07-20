@@ -28,6 +28,10 @@ class StreamingSettings(BaseModel):
     gentl_target_fps: float = Field(default=15.0, ge=1.0, le=60.0, description="FPS alvo do stream GenTL (reduz carga em câmeras de alta resolução)")
     max_frame_buffer_size: int = Field(default=30, description="Tamanho máximo do buffer")
     loop_video: bool = Field(default=True, description="Loop do vídeo")
+    unhealthy_restart_after_s: float = Field(
+        default=10.0, ge=1.0,
+        description="Segundos UNHEALTHY antes de reiniciar captura",
+    )
     
     @field_validator("source_type")
     @classmethod
@@ -68,11 +72,75 @@ class DetectionSettings(BaseModel):
         default=64, ge=1,
         description="Área mínima (px) para aceitar uma máscara e calcular geometria/PCA",
     )
-    prioritize_area: bool = Field(
-        default=True,
-        description="Usa confiança+área para eleger a melhor detecção (pick-and-place)",
+    pick_selection_method: str = Field(
+        default="area_then_conf",
+        description=(
+            "Método de seleção do alvo pick: area_then_conf (paralaxe), "
+            "weighted_score, area_only, confidence_only"
+        ),
     )
-    
+    pick_confidence_weight: float = Field(
+        default=1.0, ge=0.0,
+        description="Peso da confiança no método weighted_score",
+    )
+    pick_area_weight: float = Field(
+        default=1.0, ge=0.0,
+        description="Peso da área no método weighted_score",
+    )
+    plc_area_unit: str = Field(
+        default="cm2",
+        description="Unidade de OBJECT_AREA no CLP: cm2, mm2 ou px2",
+    )
+    stable_frames: int = Field(
+        default=3, ge=1, le=30,
+        description="Frames consecutivos para estabilizar pick antes da FSM",
+    )
+    centroid_epsilon_px: float = Field(
+        default=15.0, ge=0.0,
+        description="Tolerância px para considerar mesmo alvo entre frames",
+    )
+    inference_max_consecutive_errors: int = Field(
+        default=5, ge=1, le=50,
+        description="Erros consecutivos antes de reiniciar worker de inferência",
+    )
+    prioritize_area: Optional[bool] = Field(
+        default=None,
+        description="Legado: migrado para pick_selection_method se definido",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_prioritize_area(cls, data: object) -> object:
+        """Migra prioritize_area legado para pick_selection_method."""
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        if "pick_selection_method" not in data and "prioritize_area" in data:
+            prioritize = data.pop("prioritize_area")
+            if prioritize is False:
+                data["pick_selection_method"] = "confidence_only"
+            elif prioritize is True:
+                data["pick_selection_method"] = "weighted_score"
+        elif "prioritize_area" in data:
+            data.pop("prioritize_area", None)
+        return data
+
+    @field_validator("pick_selection_method")
+    @classmethod
+    def validate_pick_selection_method(cls, v: str) -> str:
+        valid = {"area_then_conf", "weighted_score", "area_only", "confidence_only"}
+        if v not in valid:
+            raise ValueError(f"pick_selection_method deve ser um de: {valid}")
+        return v
+
+    @field_validator("plc_area_unit")
+    @classmethod
+    def validate_plc_area_unit(cls, v: str) -> str:
+        valid = {"cm2", "mm2", "px2"}
+        if v not in valid:
+            raise ValueError(f"plc_area_unit deve ser um de: {valid}")
+        return v
+
     @field_validator("device")
     @classmethod
     def validate_device(cls, v: str) -> str:
@@ -95,6 +163,10 @@ class PreprocessSettings(BaseModel):
     brightness: float = Field(default=0.0, ge=-1.0, le=1.0, description="Ajuste de brilho")
     contrast: float = Field(default=0.0, ge=-1.0, le=1.0, description="Ajuste de contraste")
     roi: Optional[List[int]] = Field(default=None, description="ROI [x, y, width, height] em px")
+    roi_enabled: bool = Field(
+        default=True,
+        description="Activa overlay e confinamento do centroide ao ROI",
+    )
     roi_unit: str = Field(default="px", description="Unidade ROI: px ou mm")
     roi_calibration_mm_per_px: float = Field(
         default=1.0, ge=0.0001, description="Calibração mm/px: multiplica pixels para obter mm (default 1)"
@@ -120,11 +192,30 @@ class CIPSettings(BaseModel):
     connection_timeout: float = Field(default=10.0, ge=1.0, description="Timeout de conexão (s)")
     timeout_ms: int = Field(default=10000, ge=1000, description="Timeout de operação (ms)")
     retry_interval: float = Field(default=2.0, ge=0.5, description="Intervalo de reconexão (s)")
-    max_retries: int = Field(default=3, ge=0, description="Máximo de tentativas de conexão")
+    max_retries: int = Field(default=3, ge=0, description="Máximo de tentativas (0 = infinito)")
+    reconnect_backoff_cap_s: float = Field(default=60.0, ge=1.0, description="Teto backoff reconexão (s)")
     io_retries: int = Field(default=2, ge=0, le=5, description="Tentativas de leitura/escrita por operação")
     simulated: bool = Field(default=False, description="Modo simulado")
     heartbeat_interval: float = Field(default=1.0, ge=0.1, description="Intervalo de heartbeat (s)")
     auto_reconnect: bool = Field(default=True, description="Reconexão automática quando degradado/desconectado")
+
+
+class ReliabilitySettings(BaseModel):
+    """Configurações de resiliência operacional."""
+
+    production_mode: bool = Field(
+        default=False,
+        description="True: fail-closed, sem fallback SimulatedPLC silencioso",
+    )
+    stream_auto_restart: bool = Field(default=True, description="Reinicia captura após UNHEALTHY")
+    inference_auto_restart: bool = Field(default=True, description="Reinicia worker após erros consecutivos")
+
+
+class LoggingSettings(BaseModel):
+    """Configurações de logging."""
+
+    max_bytes: int = Field(default=50_000_000, ge=1_000_000, description="Tamanho máx. por ficheiro log")
+    backup_count: int = Field(default=10, ge=1, le=100, description="Número de backups rotacionados")
 
 
 class RobotControlSettings(BaseModel):
@@ -207,6 +298,8 @@ class Settings(BaseSettings):
     preprocess: PreprocessSettings = Field(default_factory=PreprocessSettings)
     cip: CIPSettings = Field(default_factory=CIPSettings)
     robot_control: RobotControlSettings = Field(default_factory=RobotControlSettings)
+    reliability: ReliabilitySettings = Field(default_factory=ReliabilitySettings)
+    logging: LoggingSettings = Field(default_factory=LoggingSettings)
     tags: TagSettings = Field(default_factory=TagSettings)
     output: OutputSettings = Field(default_factory=OutputSettings)
     

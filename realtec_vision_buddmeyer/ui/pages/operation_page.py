@@ -12,22 +12,24 @@ import numpy as np
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame,
-    QPushButton, QComboBox, QLabel, QFileDialog,
+    QPushButton, QComboBox, QLabel, QFileDialog, QSpinBox,
     QSplitter, QGroupBox, QCheckBox, QMessageBox,
 )
 from PySide6.QtCore import Qt, Slot, QTimer, Signal
 from PySide6.QtGui import QFont, QKeySequence, QShortcut
 
 from config import get_settings
+from coordinate.transform import get_coordinate_transform
 from core.logger import get_logger
-from preprocessing.roi_manager import clamp_centroid_to_roi
 from core.metrics import MetricsCollector
 from streaming import StreamManager
 from streaming.mjpeg_server import MjpegServer
 from detection import InferenceEngine
+from detection.pick_selection import area_for_plc, select_pick_target
 from communication import CIPClient
 from control import RobotController
 
+from ui.detection_overlay import draw_detection_masks_on_frame
 from ui.widgets.video_widget import VideoWidget
 from ui.widgets.status_panel import StatusPanel
 from ui.widgets.event_console import EventConsole
@@ -60,10 +62,9 @@ class OperationPage(QWidget):
         self._is_running = False
         self._mjpeg_server: Optional[MjpegServer] = None
         
-        # Contador de frames para comunicação periódica com CLP
-        self._frame_count = 0
-        self._communication_interval = 25  # Comunicar a cada 25 frames
-        self._last_best_detection = None  # Armazena última melhor detecção
+        self._last_best_detection = None
+        self._last_base_frame: Optional[np.ndarray] = None
+        self._last_overlay_result = None
         self._detection_count = 0  # Contador total de detecções
         self._error_count = 0  # Contador total de erros
         
@@ -71,6 +72,9 @@ class OperationPage(QWidget):
         self._model_loading = False
         self._shutdown_requested = False
         self._pending_start_source_label: Optional[str] = None
+        self._roi_persist_timer = QTimer(self)
+        self._roi_persist_timer.setSingleShot(True)
+        self._roi_persist_timer.timeout.connect(self._persist_roi_to_config)
         
         self._setup_ui()
         self._sync_combo_to_settings()
@@ -94,6 +98,7 @@ class OperationPage(QWidget):
         
         # Widget de vídeo
         self._video_widget = VideoWidget()
+        self._video_widget.set_show_overlay(False)
         self._video_widget.double_clicked.connect(self._toggle_fullscreen)
         central_layout.addWidget(self._video_widget, stretch=3)
         
@@ -173,19 +178,21 @@ class OperationPage(QWidget):
         controls_layout.addWidget(QLabel("Fonte:"))
         
         self._source_combo = QComboBox()
-        self._source_combo.setMinimumWidth(150)
+        self._source_combo.setMinimumWidth(180)
         self._source_combo.addItems([
-            "Arquivo de Vídeo",
             "Câmera USB",
-            "Câmera GigE",
             "Câmera GenTL (Omron Sentech)",
         ])
         self._source_combo.currentIndexChanged.connect(self._on_source_changed)
         controls_layout.addWidget(self._source_combo)
         
-        self._source_path_btn = QPushButton("Selecionar...")
-        self._source_path_btn.clicked.connect(self._select_video_file)
-        controls_layout.addWidget(self._source_path_btn)
+        self._usb_index_spin = QSpinBox()
+        self._usb_index_spin.setRange(0, 10)
+        self._usb_index_spin.setToolTip("Índice da câmera USB (0 = primeira)")
+        self._usb_index_spin.valueChanged.connect(self._on_usb_index_changed)
+        self._usb_index_label = QLabel("Índice:")
+        controls_layout.addWidget(self._usb_index_label)
+        controls_layout.addWidget(self._usb_index_spin)
         
         self._gentl_cti_btn = QPushButton("Selecionar CTI...")
         self._gentl_cti_btn.setToolTip("Selecionar arquivo CTI GenTL (ex.: Omron Sentech)")
@@ -348,59 +355,75 @@ class OperationPage(QWidget):
         layout.addWidget(controls_frame)
     
     def _load_roi_from_settings(self) -> None:
-        """Carrega ROI das configurações para o painel. Padrão: metade da área a partir do centro."""
+        """Carrega ROI das configurações para o painel."""
         from config.settings import DEFAULT_ROI_QUARTER_AREA
 
         s = self._settings.preprocess
+        enabled = bool(getattr(s, "roi_enabled", True))
         if s.roi and len(s.roi) == 4:
-            self._status_panel.set_roi(True, s.roi[0], s.roi[1], s.roi[2], s.roi[3])
+            self._status_panel.set_roi(enabled, s.roi[0], s.roi[1], s.roi[2], s.roi[3])
         else:
-            # ROI padrão: metade da área centralizada (ex.: 640x480 -> 320x240)
             x, y, w, h = DEFAULT_ROI_QUARTER_AREA
             self._status_panel.set_roi(True, x, y, w, h)
-            s.roi = list(DEFAULT_ROI_QUARTER_AREA)  # aplica em memória para pipeline
+            s.roi = list(DEFAULT_ROI_QUARTER_AREA)
+            s.roi_enabled = True
         self._refresh_centroid_display()
 
+    def _persist_roi_to_config(self) -> None:
+        """Grava dimensões ROI e estado de confinamento em config.yaml."""
+        config_path = self._settings.get_base_path() / "config" / "config.yaml"
+        self._settings.to_yaml(config_path)
+        self._logger.info(
+            "roi_persisted",
+            roi=self._settings.preprocess.roi,
+            roi_enabled=self._settings.preprocess.roi_enabled,
+        )
+    
     def _refresh_centroid_display(self) -> None:
         """Atualiza exibição do centroide no painel (usa calibração atual)."""
         if self._last_best_detection is not None:
             self._status_panel.update_detection(self._last_best_detection)
     
     def _on_roi_changed(self) -> None:
-        """Atualiza settings quando ROI muda (persistência via Salvar Config)."""
+        """Atualiza settings e persiste ROI como default quando dimensões mudam."""
         enabled, coords = self._status_panel.get_roi()
-        self._settings.preprocess.roi = coords if enabled else None
+        self._settings.preprocess.roi = list(coords)
+        self._settings.preprocess.roi_enabled = enabled
+        self._refresh_centroid_display()
+        self._roi_persist_timer.start(500)
     
     def _sync_combo_to_settings(self) -> None:
         """Sincroniza o combo de fonte com o source_type do settings."""
-        source_type_map = {"video": 0, "usb": 1, "gige": 2, "gentl": 3}
+        source_type_map = {"usb": 0, "gentl": 1}
         current_source = self._settings.streaming.source_type
-        combo_index = source_type_map.get(current_source, 1)  # 1 = usb como padrão
+        if current_source not in source_type_map:
+            current_source = "usb"
+            self._settings.streaming.source_type = "usb"
+        combo_index = source_type_map[current_source]
         self._source_combo.setCurrentIndex(combo_index)
-        # Atualiza visibilidade dos botões de seleção (vídeo vs GenTL)
-        self._source_path_btn.setVisible(combo_index == 0)
-        self._gentl_cti_btn.setVisible(combo_index == 3)
-        self._gentl_settings_btn.setVisible(combo_index == 3)
-        self._update_source_caption()
+        self._usb_index_spin.setValue(self._settings.streaming.usb_camera_index)
+        self._on_source_changed(combo_index)
+    
+    def _on_usb_index_changed(self, value: int) -> None:
+        """Actualiza índice USB em memória e legenda."""
+        self._settings.streaming.usb_camera_index = value
+        if self._source_combo.currentIndex() == 0:
+            self._update_source_caption()
     
     def _update_source_caption(self) -> None:
         """Atualiza a legenda da fonte atual (abaixo do vídeo)."""
         idx = self._source_combo.currentIndex()
         if idx == 0:
-            path = self._settings.streaming.video_path or "—"
-            name = Path(path).name if path != "—" else path
-            self._source_caption.setText(f"Fonte: Arquivo de vídeo — {name}")
-        elif idx == 1:
             cam = self._settings.streaming.usb_camera_index
             self._source_caption.setText(f"Fonte: Câmera USB (índice {cam})")
-        elif idx == 2:
-            self._source_caption.setText("Fonte: Câmera GigE")
         else:
             cti = (self._settings.streaming.gentl_cti_path or "").strip()
             if cti:
                 self._source_caption.setText(f"Fonte: Câmera GenTL — {Path(cti).name}")
             else:
-                self._source_caption.setText("Fonte: Câmera GenTL (Omron Sentech) — use 'Selecionar CTI...'")
+                self._source_caption.setText(
+                    "Fonte: Câmera GenTL (Omron Sentech) — use 'Selecionar CTI...'"
+                )
     
     def _connect_signals(self) -> None:
         """Conecta os sinais."""
@@ -411,7 +434,7 @@ class OperationPage(QWidget):
         self._stream_manager.stream_error.connect(self._on_stream_error)
         
         # Inferência
-        self._inference_engine.detection_result.connect(self._video_widget.update_detections)
+        self._inference_engine.detection_result.connect(self._on_detection_result)
         self._inference_engine.detection_event.connect(self._on_detection)
         
         # CIP
@@ -455,9 +478,9 @@ class OperationPage(QWidget):
         if self._is_running:
             return
         
-        # Determina fonte selecionada na UI
-        source_types = ["video", "usb", "gige", "gentl"]
-        source_labels = ["Arquivo de Vídeo", "Câmera USB", "Câmera GigE", "Câmera GenTL (Omron Sentech)"]
+        # Determina fonte selecionada na UI (câmera USB ou GenTL)
+        source_types = ["usb", "gentl"]
+        source_labels = ["Câmera USB", "Câmera GenTL (Omron Sentech)"]
         source_index = self._source_combo.currentIndex()
         source_type = source_types[source_index]
         
@@ -468,6 +491,8 @@ class OperationPage(QWidget):
         
         # Atualiza fonte em memória
         self._settings.streaming.source_type = source_type
+        if source_type == "usb":
+            self._settings.streaming.usb_camera_index = self._usb_index_spin.value()
         
         # Validação prévia para GenTL (arquivo CTI)
         if source_type == "gentl":
@@ -488,79 +513,13 @@ class OperationPage(QWidget):
                 self._logger.error("gentl_cti_not_found_on_start", path=str(cti_path))
                 return
         
-        # Validação prévia específica para vídeo (arquivo)
-        if source_type == "video":
-            video_path_str = self._settings.streaming.video_path
-            video_path = Path(video_path_str)
-            
-            # Normaliza caminho (resolve relativos e absolutos)
-            if not video_path.is_absolute():
-                base_path = Path(__file__).parent.parent.parent
-                video_path = base_path / video_path_str
-            
-            try:
-                video_path = video_path.resolve()
-            except Exception as e:
-                self._logger.warning("path_resolve_failed", path=str(video_path), error=str(e))
-            
-            # Verifica se arquivo existe
-            if not video_path.exists():
-                error_msg = (
-                    f"Arquivo de vídeo não encontrado:\n"
-                    f"{video_path}\n\n"
-                    f"Por favor, selecione um arquivo válido usando o botão 'Selecionar...'"
-                )
-                self._event_console.add_error(error_msg)
-                self._logger.error("video_not_found_on_start", path=str(video_path))
-                return
-            
-            # Verifica se é um arquivo válido (não é diretório)
-            if not video_path.is_file():
-                error_msg = f"O caminho especificado não é um arquivo: {video_path}"
-                self._event_console.add_error(error_msg)
-                self._logger.error("video_path_is_not_file", path=str(video_path))
-                return
-            
-            # Testa se OpenCV consegue abrir o arquivo
-            import cv2
-            test_cap = cv2.VideoCapture(str(video_path))
-            if not test_cap.isOpened():
-                test_cap.release()
-                error_msg = (
-                    f"Não foi possível abrir o arquivo de vídeo:\n"
-                    f"{video_path}\n\n"
-                    f"O arquivo pode estar corrompido ou em formato não suportado.\n"
-                    f"Formatos suportados: MP4, AVI, MOV, MKV"
-                )
-                self._event_console.add_error(error_msg)
-                self._logger.error("video_cannot_open", path=str(video_path))
-                return
-            test_cap.release()
-            
-            # Atualiza com caminho normalizado
-            self._settings.streaming.video_path = str(video_path)
-            self._logger.info("video_validated", path=str(video_path))
-        
         # Atualiza configuração do StreamManager com os parâmetros da fonte
-        # change_source() atualiza o singleton em memória; start() usará esses valores
-        if source_type == "video":
-            self._stream_manager.change_source(
-                source_type=source_type,
-                video_path=self._settings.streaming.video_path,
-                loop_video=self._settings.streaming.loop_video,
-            )
-        elif source_type == "usb":
+        if source_type == "usb":
             self._stream_manager.change_source(
                 source_type=source_type,
                 camera_index=self._settings.streaming.usb_camera_index,
             )
-        elif source_type == "gige":
-            self._stream_manager.change_source(
-                source_type=source_type,
-                gige_ip=self._settings.streaming.gige_ip,
-                gige_port=self._settings.streaming.gige_port,
-            )
-        elif source_type == "gentl":
+        else:
             self._stream_manager.change_source(
                 source_type=source_type,
                 gentl_cti_path=self._settings.streaming.gentl_cti_path,
@@ -713,15 +672,18 @@ class OperationPage(QWidget):
         self._cip_client.shutdown_for_exit()
 
     async def _connect_plc_and_start_robot(self) -> None:
-        """
-        Conecta ao CLP em modo real por default.
-        Se falhar, avisa e inicia em modo simulado com robo virtual.
-        """
+        """Conecta ao CLP. Em production_mode falha se CLP real indisponível."""
+        production = getattr(self._settings.reliability, "production_mode", False)
         try:
-            # Tenta conectar (real primeiro, fallback para simulado)
             await self._cip_client.connect()
-            
+
             if self._cip_client.is_simulated:
+                if production:
+                    self._event_console.add_error(
+                        "CLP real indisponível em production_mode. FSM não iniciada."
+                    )
+                    self._logger.error("plc_unavailable_production_mode")
+                    return
                 self._event_console.add_warning(
                     "CLP real nao alcancavel - operando em modo SIMULADO.\n"
                     "Robo virtual ativo: pick-and-place simulado com delays."
@@ -731,32 +693,35 @@ class OperationPage(QWidget):
                 self._event_console.add_success(
                     f"Conectado ao CLP real ({self._settings.cip.ip}:{self._settings.cip.port})"
                 )
-            
-            # Seta VisionReady = True
+
             try:
                 await self._cip_client.set_vision_ready(True)
                 self._event_console.add_info("VisionReady = True enviado ao CLP")
             except Exception as e:
                 self._logger.warning("failed_to_set_vision_ready", error=str(e))
-            
-            # Inicia controlador de robo (funciona em real e simulado)
+
             self._robot_controller.start()
             mode_label = "continuo" if self._continuous_cb.isChecked() else "manual"
             self._event_console.add_info(
                 f"Controlador de robo iniciado (modo {mode_label})"
             )
-                
+
         except Exception as e:
+            if production:
+                self._event_console.add_error(
+                    f"Falha ao conectar CLP (production_mode): {e}"
+                )
+                self._logger.error("plc_connect_exception_production", error=str(e))
+                return
             self._event_console.add_warning(
                 f"Erro ao conectar CLP: {e}\n"
                 f"Sistema operando em modo simulado."
             )
             self._logger.error("plc_connect_exception", error=str(e))
-            # Garante conexão simulada
             if not self._cip_client.is_connected:
                 await self._cip_client._connect_simulated()
             self._robot_controller.start()
-    
+
     async def _connect_plc(self) -> None:
         """Conecta ao CLP."""
         try:
@@ -764,146 +729,6 @@ class OperationPage(QWidget):
             self._event_console.add_success("Conectado ao CLP")
         except Exception as e:
             self._event_console.add_warning(f"CLP em modo simulado: {e}")
-    
-    def _communicate_centroid_to_plc(self) -> None:
-        """
-        Comunica as coordenadas do centroide ao CLP.
-        
-        Chamado a cada 25 frames.
-        Usa as TAGs definidas: CENTROID_X, CENTROID_Y, CONFIDENCE, etc.
-        Inclui handshake básico: só envia se CLP conectado e visão OK.
-        """
-        if self._last_best_detection is None:
-            return
-        
-        # Handshake básico: verifica estado do CLP
-        if not self._cip_client._state.is_connected:
-            self._logger.debug("skipping_centroid_plc_not_connected")
-            return
-        
-        # Verifica se está em modo saudável (não degradado)
-        if self._cip_client._state.status.value == "degraded":
-            self._logger.debug("skipping_centroid_plc_degraded")
-            return
-        
-        detection = self._last_best_detection
-        centroid_x_px = detection.centroid[0]
-        centroid_y_px = detection.centroid[1]
-        confidence = detection.confidence
-
-        # Clamp ao ROI quando exibido (evita colisão da plataforma com container)
-        roi_enabled, roi_coords = self._status_panel.get_roi()
-        if roi_enabled and roi_coords and len(roi_coords) == 4:
-            centroid_x_px, centroid_y_px = clamp_centroid_to_roi(
-                centroid_x_px, centroid_y_px, tuple(roi_coords)
-            )
-
-        # Aplica mm/px ao centroide: coord_mm = coord_px * mm_per_px
-        mm_per_px = getattr(
-            self._settings.preprocess, "roi_calibration_mm_per_px", 1.0
-        ) or 1.0
-        centroid_x = centroid_x_px * mm_per_px
-        centroid_y = centroid_y_px * mm_per_px
-
-        # Ângulo e área (vindos do pipeline de segmentação)
-        angle_deg = float(getattr(detection, "angle_deg", None) or 0.0)
-        area_px = float(getattr(detection, "area_px", None) or 0.0)
-        area_scaled = area_px * (mm_per_px ** 2)
-
-        # Log da comunicação
-        self._logger.info(
-            "communicating_centroid_to_plc",
-            frame=self._frame_count,
-            centroid_x=centroid_x,
-            centroid_y=centroid_y,
-            angle_deg=angle_deg,
-            area=area_scaled,
-            confidence=confidence,
-            plc_status=self._cip_client._state.status.value,
-        )
-
-        self._event_console.add_info(
-            f"[Frame {self._frame_count}] Enviando centroide: "
-            f"({centroid_x:.1f}, {centroid_y:.1f}) ang={angle_deg:.1f}° "
-            f"area={area_scaled:.0f} Conf: {confidence:.0%}",
-            "CLP",
-        )
-
-        asyncio.create_task(self._send_detection_to_plc(
-            centroid_x=centroid_x,
-            centroid_y=centroid_y,
-            confidence=confidence,
-            detection_count=detection.detection_count,
-            processing_time=detection.inference_time_ms,
-            angle_deg=angle_deg,
-            area=area_scaled,
-        ))
-
-    async def _send_detection_to_plc(
-        self,
-        centroid_x: float,
-        centroid_y: float,
-        confidence: float,
-        detection_count: int,
-        processing_time: float,
-        angle_deg: float = 0.0,
-        area: float = 0.0,
-    ) -> None:
-        """
-        Envia dados de detecção ao CLP via TAGs com handshake básico.
-        
-        Handshake:
-        1. Verifica se CLP está conectado
-        2. (Opcional) Lê RobotReady para confirmar que CLP aceita dados
-        3. Escreve as TAGs de detecção
-        
-        TAGs utilizadas:
-        - PRODUCT_DETECTED: bool
-        - CENTROID_X: float
-        - CENTROID_Y: float
-        - CONFIDENCE: float
-        - DETECTION_COUNT: int
-        - PROCESSING_TIME: float
-        """
-        try:
-            # Checagem de status antes de enviar
-            if not self._cip_client._state.is_connected:
-                self._logger.debug("send_detection_skipped_not_connected")
-                return
-            
-            # Handshake: tenta ler RobotReady (se falhar, continua mesmo assim)
-            robot_ready = True  # Default para modo simulado ou se leitura falhar
-            try:
-                robot_ready = await self._cip_client.read_tag("RobotReady")
-            except Exception:
-                pass  # Em modo simulado ou erro de leitura, assume ready
-            
-            if not robot_ready:
-                self._logger.debug("send_detection_skipped_robot_not_ready")
-                return
-            
-            # Usa o método write_detection_result do CIPClient
-            await self._cip_client.write_detection_result(
-                detected=True,
-                centroid_x=centroid_x,
-                centroid_y=centroid_y,
-                confidence=confidence,
-                detection_count=detection_count,
-                processing_time=processing_time,
-                angle_deg=angle_deg,
-                area=area,
-            )
-            
-            self._logger.debug(
-                "detection_sent_to_plc",
-                centroid_x=centroid_x,
-                centroid_y=centroid_y,
-                robot_ready=robot_ready,
-            )
-            
-        except Exception as e:
-            self._logger.warning("failed_to_send_detection", error=str(e))
-            self._status_panel.set_last_error(str(e))
     
     async def _shutdown_plc_connection(self) -> None:
         """Seta VisionReady = False e desconecta do CLP."""
@@ -923,8 +748,9 @@ class OperationPage(QWidget):
             return
 
         self._is_running = False
-        self._frame_count = 0
         self._last_best_detection = None
+        self._last_base_frame = None
+        self._last_overlay_result = None
 
         self._event_console.add_info("Parando sistema...")
 
@@ -994,7 +820,8 @@ class OperationPage(QWidget):
         self._pause_btn.setEnabled(self._is_running)
         self._stop_btn.setEnabled(self._is_running)
         self._source_combo.setEnabled(not self._is_running)
-        self._source_path_btn.setEnabled(True)  # Sempre habilitado
+        self._usb_index_spin.setEnabled(not self._is_running)
+        self._gentl_cti_btn.setEnabled(not self._is_running)
         
         # Controles de ciclo
         is_manual = not self._continuous_cb.isChecked()
@@ -1012,118 +839,13 @@ class OperationPage(QWidget):
         self._status_panel.set_inference_running(self._is_running)
     
     def _on_source_changed(self, index: int) -> None:
-        """Handler para mudança de fonte."""
-        self._source_path_btn.setVisible(index == 0)
-        self._gentl_cti_btn.setVisible(index == 3)
-        self._gentl_settings_btn.setVisible(index == 3)
+        """Handler para mudança de fonte (USB vs GenTL)."""
+        is_usb = index == 0
+        self._usb_index_label.setVisible(is_usb)
+        self._usb_index_spin.setVisible(is_usb)
+        self._gentl_cti_btn.setVisible(not is_usb)
+        self._gentl_settings_btn.setVisible(not is_usb)
         self._update_source_caption()
-    
-    def _select_video_file(self) -> None:
-        """Abre diálogo para selecionar vídeo."""
-        # Obtém diretório inicial (tenta usar o último caminho ou diretório padrão)
-        initial_dir = None
-        current_path = self._settings.streaming.video_path
-        if current_path:
-            current_path_obj = Path(current_path)
-            if current_path_obj.exists():
-                initial_dir = str(current_path_obj.parent)
-            elif current_path_obj.parent.exists():
-                initial_dir = str(current_path_obj.parent)
-        
-        if not initial_dir:
-            # Usa diretório padrão de vídeos
-            base_path = Path(__file__).parent.parent.parent
-            initial_dir = str(base_path / "videos")
-        
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Selecionar Vídeo",
-            initial_dir,
-            "Vídeos (*.mp4 *.avi *.mov *.mkv);;Todos os Arquivos (*)",
-        )
-        
-        if file_path:
-            file_path_obj = Path(file_path)
-            
-            # Validações
-            if not file_path_obj.exists():
-                self._event_console.add_error(
-                    f"Arquivo não encontrado: {file_path}\n"
-                    f"Por favor, verifique se o arquivo existe."
-                )
-                return
-            
-            if not file_path_obj.is_file():
-                self._event_console.add_error(
-                    f"O caminho especificado não é um arquivo: {file_path}"
-                )
-                return
-            
-            # Testa se OpenCV consegue abrir
-            import cv2
-            test_cap = cv2.VideoCapture(str(file_path_obj))
-            if not test_cap.isOpened():
-                test_cap.release()
-                self._event_console.add_error(
-                    f"Não foi possível abrir o arquivo de vídeo:\n"
-                    f"{file_path}\n\n"
-                    f"O arquivo pode estar corrompido ou em formato não suportado.\n"
-                    f"Formatos suportados: MP4, AVI, MOV, MKV"
-                )
-                return
-            test_cap.release()
-            
-            # Converte para caminho absoluto normalizado
-            abs_path = file_path_obj.resolve()
-            abs_path_str = str(abs_path)
-            
-            # Atualiza configuração
-            self._settings.streaming.video_path = abs_path_str
-            
-            # Log
-            self._logger.info("video_selected", path=abs_path_str)
-            self._event_console.add_info(f"Vídeo selecionado: {file_path_obj.name}")
-            
-            # Se o sistema está rodando, atualiza o stream sem parar a inferência
-            if self._is_running and self._stream_manager.is_running:
-                self._event_console.add_info("Atualizando stream para novo vídeo...")
-                
-                # Muda a fonte; change_source reinicia automaticamente se estava rodando
-                success = self._stream_manager.change_source(
-                    source_type="video",
-                    video_path=abs_path_str,
-                    loop_video=self._settings.streaming.loop_video,
-                )
-                
-                if success:
-                    # Atualiza o combo para refletir a nova fonte
-                    self._source_combo.blockSignals(True)
-                    self._source_combo.setCurrentIndex(0)  # "Arquivo de Vídeo"
-                    self._source_combo.blockSignals(False)
-                    self._source_path_btn.setVisible(True)
-                    
-                    self._event_console.add_success(f"Stream atualizado para: {file_path_obj.name}")
-                    self._logger.info("video_changed_during_runtime", path=abs_path_str)
-                else:
-                    # O stream falhou ao trocar — para o sistema inteiro para estado consistente
-                    self._event_console.add_error(
-                        f"Falha ao abrir vídeo: {file_path_obj.name}\n"
-                        f"O sistema será parado. Reinicie manualmente."
-                    )
-                    self._logger.error("video_change_failed_stopping_system", path=abs_path_str)
-                    self._stop_system()
-            else:
-                # Sistema não está rodando, apenas atualiza configuração em memória
-                self._stream_manager.change_source(
-                    source_type="video",
-                    video_path=abs_path_str,
-                    loop_video=self._settings.streaming.loop_video,
-                )
-                # Atualiza o combo para refletir a nova fonte
-                self._source_combo.blockSignals(True)
-                self._source_combo.setCurrentIndex(0)  # "Arquivo de Vídeo"
-                self._source_combo.blockSignals(False)
-                self._source_path_btn.setVisible(True)
     
     def _select_gentl_cti_file(self) -> None:
         """Abre diálogo para selecionar arquivo CTI GenTL (ex.: Omron Sentech)."""
@@ -1228,87 +950,57 @@ class OperationPage(QWidget):
         return out
 
     def _draw_detections_on_frame(self, frame, result) -> np.ndarray:
-        """Desenha a melhor detecção no frame (BGR) para o stream MJPEG.
-
-        Quando há máscara (segmentação), desenha contorno + centróide geométrico
-        + vetor do eixo maior; caso contrário, desenha bbox + centro do bbox.
-        """
-        import cv2
-        import math
-
+        """Desenha todas as detecções no frame; destaca o alvo de pick (BGR)."""
         if result is None or not result.has_detections:
             return frame
-        # Prioriza confiança+área quando possível
-        try:
-            best = result.best_by_priority()
-        except AttributeError:
-            best = result.best_detection
-        if best is None:
-            return frame
-        out = frame.copy()
-        bbox = best.bbox
-        x1, y1 = int(bbox.x1), int(bbox.y1)
-        x2, y2 = int(bbox.x2), int(bbox.y2)
 
-        if best.confidence >= 0.8:
-            color = (0, 255, 0)
-        elif best.confidence >= 0.5:
-            color = (0, 255, 255)
-        else:
-            color = (0, 165, 255)
+        det_cfg = self._settings.detection
+        mm_per_px = get_coordinate_transform().mm_per_px
+        pick = select_pick_target(
+            result.detections,
+            method=det_cfg.pick_selection_method,
+            confidence_weight=det_cfg.pick_confidence_weight,
+            area_weight=det_cfg.pick_area_weight,
+        )
+        roi_enabled, roi_coords = self._status_panel.get_roi()
+        return draw_detection_masks_on_frame(
+            frame,
+            result.detections,
+            pick,
+            mm_per_px=mm_per_px,
+            roi_enabled=roi_enabled,
+            roi=roi_coords if roi_enabled else None,
+        )
 
-        if best.has_mask and best.mask is not None:
-            try:
-                bin_mask = best.mask.astype(np.uint8)
-                contours, _ = cv2.findContours(
-                    bin_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE,
-                )
-                overlay = out.copy()
-                cv2.drawContours(overlay, contours, -1, color, thickness=cv2.FILLED)
-                cv2.addWeighted(overlay, 0.25, out, 0.75, 0, out)
-                cv2.drawContours(out, contours, -1, color, thickness=2)
-            except Exception:
-                cv2.rectangle(out, (x1, y1), (x2, y2), color, 3)
-        else:
-            cv2.rectangle(out, (x1, y1), (x2, y2), color, 3)
+    def _refresh_video_with_detections(self) -> None:
+        """Recompõe o frame exibido com todas as detecções do último resultado."""
+        if self._last_base_frame is None:
+            return
 
-        cx_f, cy_f = best.centroid
-        cx, cy = int(cx_f), int(cy_f)
-        cv2.circle(out, (cx, cy), 10, color, 2)
-        cv2.circle(out, (cx, cy), 10, (255, 255, 255), 1)
+        frame = self._draw_roi_overlay_if_enabled(self._last_base_frame)
+        result = self._last_overlay_result
+        if result is None:
+            result = self._inference_engine.last_result
 
-        if best.has_orientation:
-            angle = float(best.angle_deg or 0.0)
-            if best.major_axis_length is not None and best.major_axis_length > 0:
-                half = 0.5 * float(best.major_axis_length)
-            else:
-                half = 0.5 * max(bbox.width, bbox.height)
-            dx = math.cos(math.radians(angle)) * half
-            dy = math.sin(math.radians(angle)) * half
-            p1 = (int(cx_f - dx), int(cy_f - dy))
-            p2 = (int(cx_f + dx), int(cy_f + dy))
-            cv2.line(out, p1, p2, (255, 0, 255), 3)
-            cv2.circle(out, p2, 6, (255, 0, 255), -1)
-
-        label = f"{best.class_name} {best.confidence:.0%}"
-        cv2.putText(out, label, (x1, max(12, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-
-        extras: List[str] = []
-        if best.angle_deg is not None:
-            extras.append(f"{best.angle_deg:.1f} deg")
-        if best.area_px is not None:
-            extras.append(f"A={best.area_px:.0f}px2")
-        if extras:
-            cv2.putText(
-                out,
-                " | ".join(extras),
-                (x1, y2 + 18),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
-                (0, 255, 255),
-                2,
+        if result is not None and result.has_detections:
+            self._logger.debug(
+                "overlay_refresh",
+                detection_count=result.count,
+                masks_with_data=sum(
+                    1 for d in result.detections if getattr(d, "mask", None) is not None
+                ),
             )
-        return out
+            frame = self._draw_detections_on_frame(frame, result)
+
+        self._video_widget.update_frame(frame)
+        if self._mjpeg_server is not None:
+            self._mjpeg_server.push_frame(frame)
+
+    @Slot(object)
+    def _on_detection_result(self, result) -> None:
+        """Atualiza overlay assim que a inferência devolve todas as detecções."""
+        self._last_overlay_result = result
+        self._refresh_video_with_detections()
 
     @Slot(object)
     def _on_frame_available(self, frame_info) -> None:
@@ -1316,20 +1008,11 @@ class OperationPage(QWidget):
         if not self._is_running:
             return
         frame = frame_info.frame
-        frame_for_display = self._draw_roi_overlay_if_enabled(frame)
-        self._video_widget.update_frame(frame_for_display)
-
-        if self._mjpeg_server is not None:
-            result = self._inference_engine.last_result
-            frame_for_stream = self._draw_detections_on_frame(frame_for_display, result)
-            self._mjpeg_server.push_frame(frame_for_stream)
+        self._last_base_frame = frame.copy()
+        self._refresh_video_with_detections()
 
         if self._is_running and self._inference_engine.is_running:
             self._inference_engine.process_frame(frame, frame_info.frame_id)
-
-            self._frame_count += 1
-            if self._frame_count % self._communication_interval == 0:
-                self._communicate_centroid_to_plc()
     
     @Slot(object)
     def _on_detection(self, event) -> None:
@@ -1337,18 +1020,17 @@ class OperationPage(QWidget):
         if not self._is_running:
             return
         if event.detected:
-            # Armazena a melhor detecção para comunicação periódica
             self._last_best_detection = event
             self._detection_count += 1
-            
+
             self._event_console.add_success(
                 f"Detectado: {event.class_name} ({event.confidence:.0%})",
                 "Detecção"
             )
             self._status_panel.update_detection(event)
-            
-            # Processa no controlador de robô
-            self._robot_controller.process_detection(event)
+
+            if self._robot_controller.accepting_detections:
+                self._robot_controller.process_detection(event)
     
     @Slot(int)
     def _on_cycle_completed(self, cycle_number: int) -> None:
@@ -1434,6 +1116,16 @@ class OperationPage(QWidget):
         else:
             self._authorize_send_btn.setVisible(False)
             self._authorize_send_btn.setEnabled(False)
+
+        stream_health = self._stream_manager.get_status().get("health", {}).get("status", "")
+        plc_status = self._cip_client.state.status.value if self._cip_client.state else ""
+        self._status_panel.update_system_health(
+            stream_health=stream_health,
+            plc_status=plc_status,
+            fsm_state=state_value,
+            simulated=self._cip_client.is_simulated,
+            production_mode=getattr(self._settings.reliability, "production_mode", False),
+        )
     
     @Slot(str)
     def _on_cycle_step(self, step: str) -> None:
