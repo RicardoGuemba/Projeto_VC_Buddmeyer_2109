@@ -1,10 +1,13 @@
 # Realtec Vision Buddmeyer – uso no macOS (Apple Silicon M1/M2/M3/M4)
 
+Baseline **v1607**. Índice: [OVERVIEW.md](OVERVIEW.md) · Modelo: [MODELO_MASK2FORMER.md](MODELO_MASK2FORMER.md) · Clone: [CLONE_BOX_PC.md](CLONE_BOX_PC.md).
+
 ## Requisitos
 
 - macOS 12+ (Monterey ou superior recomendado)
-- Python 3.10+
+- Python 3.10+ (3.11/3.12 preferível)
 - PyTorch com suporte a **MPS** (Metal Performance Shaders) para aceleração no Apple Silicon
+- Git LFS se clonar o repositório (pesos em `model_best/`)
 
 ## Instalação
 
@@ -72,6 +75,7 @@ Para visualizar o vídeo com detecções no navegador:
 
 ## Observações
 
-- **GenTL / câmeras GigE:** drivers e CTI são em geral fornecidos para Windows. No Mac, use vídeo de arquivo, USB ou RTSP.
+- **GenTL / câmeras GigE:** drivers e CTI são em geral fornecidos para Windows. No Mac, use câmera **USB** (aba Operação) ou configure fontes de lab via YAML.
 - **Caminhos:** use sempre `/` ou `pathlib.Path`; evite `C:\` ou barras invertidas.
 - **Logs:** por padrão em `realtec_vision_buddmeyer/logs/realtec_vision.log` (criado em tempo de execução).
+- **Modelo:** ver [MODELO_MASK2FORMER.md](MODELO_MASK2FORMER.md); confirme `git lfs pull` se `model.safetensors` tiver ~130 bytes.

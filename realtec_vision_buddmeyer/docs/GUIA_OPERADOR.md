@@ -16,10 +16,13 @@ Tutorial de uso das abas **Operação**, **Configuração** e **Diagnósticos**.
 
 ### Iniciar o sistema
 
-1. Escolha a **fonte de vídeo** no combo: Arquivo, USB, GigE ou GenTL.
-2. Clique **▶ Iniciar** (ou **F5**).
-3. Aguarde o carregamento do modelo (barra de status). Na primeira execução pode demorar alguns segundos.
-4. As detecções aparecem sobre o vídeo (máscara/contorno da embalagem).
+1. Escolha a **fonte de vídeo** no combo da aba Operação: **USB** ou **GenTL**.
+2. Com **USB**, selecione o índice da câmera (0, 1, 2…). Com **GenTL**, configure o CTI em Configuração → Entrada / Câmera se necessário.
+3. Clique **▶ Iniciar** (ou **F5**).
+4. Aguarde o carregamento do modelo (barra de status). Na primeira execução pode demorar alguns segundos.
+5. As detecções aparecem sobre o vídeo (máscara/contorno da embalagem).
+
+> Fontes adicionais (`video`, `rtsp`, `gige`) existem no YAML / adapters para lab, mas **não** estão no combo da aba Operação nesta baseline.
 
 ### Parar
 
@@ -48,9 +51,10 @@ Exibe em tempo real:
 
 ### Stream para navegador (MJPEG)
 
-Se habilitado em Configuração → Saída, abra no browser:
-
-`http://<IP-do-PC>:8080/stream`
+1. Configuração → Saída → **Copiar URL do stream** (primeira vez; grava preferência).
+2. Cole no navegador: `http://127.0.0.1:8080/stream`.
+3. **Após reiniciar o app**, o stream volta sozinho se já foi activado antes (mesma URL).
+4. Para vídeo ao vivo, use Operação → **▶ Iniciar**.
 
 ### Atalhos
 
@@ -71,14 +75,14 @@ Com fonte **GenTL**, use o botão de ajustes para exposição/ganho quando dispo
 
 Sub-abas: **Entrada**, **Detecção**, **Imagem**, **CLP**, **Saída**.
 
-### Entrada
+### Entrada / Câmera
 
-Parâmetros por fonte: caminho do vídeo, índice USB, IP GigE, CTI GenTL, etc.
+Parâmetros da fonte activa (USB ou GenTL): índice USB, CTI GenTL, exposição/ganho quando disponível.
 
 ### Detecção
 
-- Modelo: padrão `model_best` (Mask2Former treinado para Embalagem).
-- Limiar de confiança: valores altos reduzem falsos positivos mas podem silenciar detecções reais — use logs `inference_diagnostic` para calibrar.
+- Modelo: padrão `model_best` (Mask2Former treinado para Embalagem). Ver [MODELO_MASK2FORMER.md](MODELO_MASK2FORMER.md).
+- Limiar de confiança (default shipped ≈ **0.61**): valores altos reduzem falsos positivos mas podem silenciar detecções reais — use logs `inference_diagnostic` para calibrar.
 
 ### Imagem / ROI
 
@@ -91,7 +95,8 @@ Parâmetros por fonte: caminho do vídeo, índice USB, IP GigE, CTI GenTL, etc.
 
 ### Saída
 
-- Stream HTTP MJPEG (campo `rtsp_enabled` no YAML é nome legado).
+- **Copiar URL do stream** — um clique liga o MJPEG, grava config e copia `http://127.0.0.1:…` para colar no navegador.
+- Porta e Path opcionais (default 8080 `/stream`).
 
 **Importante:** parâmetros avançados de segmentação (`segmentation_*`, `target_classes`) estão apenas em `config/config.yaml`.
 
@@ -113,7 +118,8 @@ Parâmetros por fonte: caminho do vídeo, índice USB, IP GigE, CTI GenTL, etc.
 3. Robô confirma ACK → executa pick → place.
 4. Ciclo completa → pronto para próximo (manual ou automático).
 
-Detalhe da máquina de estados: [PICK_PLACE_EXPEDICAO.md](PICK_PLACE_EXPEDICAO.md).
+Detalhe da máquina de estados (fluxo simulado/manual): [PICK_PLACE_EXPEDICAO.md](PICK_PLACE_EXPEDICAO.md).  
+Integração com CLP real: [RUNBOOK_INTEGRACAO_CLP.md](RUNBOOK_INTEGRACAO_CLP.md).
 
 ---
 
@@ -131,5 +137,6 @@ Detalhe da máquina de estados: [PICK_PLACE_EXPEDICAO.md](PICK_PLACE_EXPEDICAO.m
 ## Documentação adicional
 
 - [OVERVIEW.md](OVERVIEW.md) — visão executiva
+- [MODELO_MASK2FORMER.md](MODELO_MASK2FORMER.md) — modelo de visão
 - [REFERENCE.md](REFERENCE.md) — referência técnica
-- [ROTEIRO_CLIENTE.md](../ROTEIRO_CLIENTE.md) — suporte e logs
+- [ROTEIRO_CLIENTE.md](../ROTEIRO_CLIENTE.md) — suporte e logs (se presente no pacote)

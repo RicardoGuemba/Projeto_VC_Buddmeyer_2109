@@ -115,3 +115,23 @@ class TestDetectionOverlay:
             if not np.array_equal(region_out, region_in):
                 changed += 1
         assert changed == 3
+
+    def test_pick_axis_anchored_at_mask_centroid_when_roi_clamps_pick(self):
+        from ui.detection_overlay import draw_detection_masks_on_frame
+
+        frame = np.zeros((300, 350, 3), dtype=np.uint8)
+        pick = _det(50.0, 175.0, 40, 1600, conf=0.95)
+        pick.angle_deg = 0.0
+        roi = [100, 100, 200, 150]
+        out = draw_detection_masks_on_frame(
+            frame,
+            [pick],
+            pick,
+            mm_per_px=1.0,
+            roi_enabled=True,
+            roi=roi,
+        )
+        axis_x, axis_y = int(pick.centroid[0]), int(pick.centroid[1])
+        pick_x, pick_y = 100, 175
+        assert out[pick_y, pick_x].any() != 0
+        assert out[axis_y, axis_x].any() != 0

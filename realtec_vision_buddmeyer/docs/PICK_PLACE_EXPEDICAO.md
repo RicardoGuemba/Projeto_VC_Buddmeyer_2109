@@ -1,13 +1,16 @@
 # Pick-and-Place para Expedição de Embalagens
 
-Buddmeyer Vision System v2.0 — Operação **sem robô físico conectado ao CLP**: processo inicia na detecção, com status de cada etapa na tela de operação, tempos realistas de expedição e modo manual por padrão.
+Buddmeyer Vision System v2.0 — **fluxo de laboratório / FAT com SimulatedPLC** (sem robô físico nem CLP Omron obrigatórios): processo inicia na detecção, com status de cada etapa na tela de operação, tempos realistas de expedição e modo manual por padrão.
+
+> **Escopo deste documento:** operação com `cip.simulated: true` (robô/CLP simulados).  
+> **CLP real / produção:** seguir [RUNBOOK_INTEGRACAO_CLP.md](RUNBOOK_INTEGRACAO_CLP.md) e [TAG_CONTRACT.md](TAG_CONTRACT.md). Com `reliability.production_mode: true`, SimulatedPLC é bloqueado.
 
 ---
 
 ## 1. Contexto: sem robô conectado ao CLP
 
 - Não há robô real conectado ao CLP. O sistema opera com **robô simulado** (SimulatedPLC), que responde às TAGs como se existisse um robô de expedição.
-- O processo começa na **deteção** pela câmera (threshold de confiança configurável). A partir daí o fluxo é: autorização (em modo manual) → envio de coordenadas ao CLP → ACK → Pick → Place → fim de ciclo.
+- O processo começa na **deteção** pela câmera (threshold de confiança configurável; default shipped ≈ 0.61). A partir daí o fluxo é: autorização (em modo manual) → envio de coordenadas ao CLP → ACK → Pick → Place → fim de ciclo.
 - Todas as etapas são exibidas na **tela de operação** (barra de status e console de eventos), para o operador acompanhar a execução em tempo real.
 - Os tempos de pick e place do robô simulado foram ajustados para **valores típicos de expedição** (pick ~4 s, place ~5 s), trazendo realidade ao processo.
 - O **modo padrão é manual**: ao final de cada ciclo é necessário autorizar o próximo ciclo; e, após uma detecção, em modo manual o sistema **pede autorização para enviar** as coordenadas ao CLP antes de deflagar o processo.
@@ -113,5 +116,6 @@ Esses valores podem ser ajustados no código do `SimulatedPLC` (`communication/c
 
 ---
 
-**Documento:** v1.0  
-**Projeto:** Buddmeyer Vision System v2.0 — Pick-and-Place para expedição (sem robô físico).
+**Documento:** v1.1 (jul/2026)  
+**Projeto:** Buddmeyer Vision System v2.0 — Pick-and-Place para expedição (**SimulatedPLC** / sem robô físico).  
+**Relacionados:** [RUNBOOK_INTEGRACAO_CLP.md](RUNBOOK_INTEGRACAO_CLP.md), [OVERVIEW.md](OVERVIEW.md), [MODELO_MASK2FORMER.md](MODELO_MASK2FORMER.md).

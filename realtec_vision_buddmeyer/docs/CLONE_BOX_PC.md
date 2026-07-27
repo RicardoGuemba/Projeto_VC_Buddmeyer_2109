@@ -5,8 +5,9 @@ Este guia cobre o **Vision Buddmeyer** (`realtec_vision_buddmeyer`) num PC indus
 ## O que vai descarregar
 
 - Código-fonte (pasta `realtec_vision_buddmeyer/`).
-- Metadados do modelo em `model_best/` (`config.json`, `preprocessor_config.json`, `task.json`, `training_args.bin`).
+- Metadados do modelo em `model_best/` (`config.json`, `preprocessor_config.json`, `task.json`).
 - **Pesos:** `model_best/model.safetensors` (~**181 MB**). Não são “só alguns bytes”: o ficheiro é grande; por isso está em **Git LFS** (limite do GitHub para blobs normais é 100 MB).
+- Detalhe do modelo: [MODELO_MASK2FORMER.md](MODELO_MASK2FORMER.md).
 
 ## Pré-requisitos no Box PC
 
@@ -23,8 +24,10 @@ Este guia cobre o **Vision Buddmeyer** (`realtec_vision_buddmeyer`) num PC indus
 Substitua a URL pela do repositório que a Realtec lhe indicar (ex.: GitHub).
 
 ```bash
+# Repo canónico (confirmar URL com a Realtec). Baseline: branch v1607-stable.
 git clone https://github.com/RicardoGuemba/Realtec_Vision_Buddmeyer.git
 cd Realtec_Vision_Buddmeyer
+git checkout v1607-stable   # opcional: pin da baseline estável
 git lfs install
 git lfs pull
 ```
@@ -112,8 +115,10 @@ python -m pytest tests/ -q
 
 ## Documentação adicional
 
-- Pipeline de segmentação: `docs/SEGMENTATION_PIPELINE.md`
-- Contrato de tags CLP: `docs/TAG_CONTRACT.md`
+- Índice: [OVERVIEW.md](OVERVIEW.md)
+- Modelo Mask2Former: [MODELO_MASK2FORMER.md](MODELO_MASK2FORMER.md)
+- Pipeline de segmentação: [SEGMENTATION_PIPELINE.md](SEGMENTATION_PIPELINE.md)
+- Contrato de tags CLP: [TAG_CONTRACT.md](TAG_CONTRACT.md)
 
 ## Resumo para o Guilherme
 

@@ -55,6 +55,7 @@ class MainWindow(QMainWindow):
         self._setup_connections()
         self._apply_theme()
         self._schedule_model_preload()
+        self._schedule_output_stream_restore()
         
         logger.info("main_window_initialized")
     
@@ -206,6 +207,11 @@ class MainWindow(QMainWindow):
         
         # Pré-carregamento do modelo (página de operação)
         self._operation_page.model_preload_finished.connect(self._on_model_preload_finished)
+
+        # Após Salvar em Configuração: aplica stream HTTP se o sistema estiver a correr
+        self._configuration_page.settings_saved.connect(
+            self._operation_page.apply_output_stream_settings
+        )
     
     def _on_tab_changed(self, index: int) -> None:
         """Ao mudar para Operação, atualiza ROI das configurações."""
@@ -215,6 +221,26 @@ class MainWindow(QMainWindow):
     def _schedule_model_preload(self) -> None:
         """Agenda o pré-carregamento do modelo 2 s após abrir a janela (evita espera ao clicar Iniciar)."""
         QTimer.singleShot(2000, self._trigger_model_preload)
+
+    def _schedule_output_stream_restore(self) -> None:
+        """Re-liga stream MJPEG após reinício se rtsp_enabled no config.yaml."""
+        QTimer.singleShot(500, self._restore_output_stream)
+
+    def _restore_output_stream(self) -> None:
+        if not self._settings.output.rtsp_enabled:
+            return
+        self._operation_page.restore_output_stream_if_configured()
+        port = self._settings.output.http_port
+        path = self._settings.output.http_path or "/stream"
+        self._statusbar.showMessage(
+            f"Stream HTTP restaurado — http://127.0.0.1:{port}{path}",
+            8000,
+        )
+        logger.info(
+            "output_stream_restored_on_startup",
+            port=port,
+            path=path,
+        )
     
     def _trigger_model_preload(self) -> None:
         """Inicia o carregamento do modelo em segundo plano na página de operação."""

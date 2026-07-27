@@ -107,11 +107,29 @@ class TestMjpegServer:
 
     def test_verify_listening_after_start(self):
         """verify_listening retorna True quando servidor está ativo."""
+        import time
+
         server = MjpegServer(host="127.0.0.1", port=19994)
         assert server.start() is True
         try:
-            import time
             time.sleep(0.2)
             assert server.verify_listening() is True
         finally:
             server.stop()
+
+    def test_get_stream_url_custom_path(self):
+        """get_stream_url inclui path custom."""
+        server = MjpegServer(host="127.0.0.1", port=19993, path="/cam")
+        assert server.start() is True
+        try:
+            url = server.get_stream_url()
+            assert "19993" in url
+            assert url.endswith("/cam")
+        finally:
+            server.stop()
+
+    def test_normalize_http_path_helper(self):
+        from streaming.mjpeg_server import normalize_http_path
+
+        assert normalize_http_path("x") == "/x"
+        assert normalize_http_path("/y") == "/y"

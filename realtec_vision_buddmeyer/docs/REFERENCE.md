@@ -112,7 +112,7 @@ Resumo; detalhe em [SEGMENTATION_PIPELINE.md](SEGMENTATION_PIPELINE.md).
 |-------|------|---------|-----------|
 | `model_path` | str | `model_best` | Pasta do modelo local |
 | `default_model` | str | `model_best` | ID HuggingFace ou caminho local |
-| `confidence_threshold` | float | `0.5` | Corte Mask2Former |
+| `confidence_threshold` | float | `0.61` | Corte Mask2Former (valor shipped em `config.yaml`) |
 | `inference_fps` | int | `15` | FPS alvo de inferência |
 | `device` | str | `auto` | `cpu`, `cuda`, `mps`, `auto` |
 | `target_classes` | list | `["Embalagem"]` | Filtro de classes |
@@ -143,7 +143,7 @@ Resumo; detalhe em [SEGMENTATION_PIPELINE.md](SEGMENTATION_PIPELINE.md).
 | `simulated` | `false` | PLC virtual |
 | `io_retries` | `2` | Retentativas read/write |
 | `auto_reconnect` | `true` | Reconexão automática |
-| `max_retries` | `0` | `0` = infinito |
+| `max_retries` | `3` | Tentativas de reconnect; `0` = infinito (recomendado em produção longa) |
 | `reconnect_backoff_cap_s` | `60.0` | Teto backoff reconnect (s) |
 
 ### `reliability`
@@ -179,9 +179,11 @@ Mapeamento nome lógico → variável global no CLP. Ver [TAG_CONTRACT.md](TAG_C
 
 | Chave | Descrição |
 |-------|-----------|
-| `rtsp_enabled` | **Nome legado** — habilita stream **HTTP MJPEG** |
+| `rtsp_enabled` | **Nome legado** — habilita stream **HTTP MJPEG** (default shipped: `false`) |
 | `http_port` | Porta (ex.: `8080`) |
-| `http_path` | Path (ex.: `/stream`) |
+| `http_path` | Path (ex.: `/stream`); Copiar URL e servidor usam o mesmo valor |
+
+Após **Salvar** em Configuração → Saída, `apply_output_stream_settings` liga/desliga/reinicia o servidor. **Copiar URL do stream** faz isto automaticamente (sem Salvar).
 
 ## 5. UI ↔ configuração
 
@@ -263,4 +265,4 @@ python -m scripts.smoke_test_segmentation --camera 0 --frames 30
 
 ---
 
-Documentos relacionados: [OVERVIEW.md](OVERVIEW.md), [GUIA_OPERADOR.md](GUIA_OPERADOR.md), [PICK_PLACE_EXPEDICAO.md](PICK_PLACE_EXPEDICAO.md).
+Documentos relacionados: [OVERVIEW.md](OVERVIEW.md), [MODELO_MASK2FORMER.md](MODELO_MASK2FORMER.md), [GUIA_OPERADOR.md](GUIA_OPERADOR.md), [PICK_PLACE_EXPEDICAO.md](PICK_PLACE_EXPEDICAO.md).

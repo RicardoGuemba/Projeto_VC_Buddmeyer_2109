@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Testes unitários do clamp de centroide ao ROI."""
 
+import math
 import sys
 from pathlib import Path
 
@@ -96,3 +97,53 @@ class TestClampCentroidToRoi:
         out_x, out_y = clamp_centroid_to_roi(cx, cy, r)
         assert out_x == 150.0  # 50 + 100
         assert out_y == 130.0  # 50 + 80
+
+
+class TestClampPickOnAxisToRoi:
+    """Confinamento colinear: pick desliza ao longo do eixo de inclinação."""
+
+    def test_inside_roi_unchanged(self):
+        from preprocessing.roi_manager import clamp_pick_on_axis_to_roi
+
+        roi = (100, 100, 200, 150)
+        out_x, out_y = clamp_pick_on_axis_to_roi(150.0, 175.0, 0.0, roi)
+        assert out_x == 150.0
+        assert out_y == 175.0
+
+    def test_outside_left_slides_along_horizontal_axis(self):
+        from preprocessing.roi_manager import clamp_pick_on_axis_to_roi
+
+        roi = (100, 100, 200, 150)
+        out_x, out_y = clamp_pick_on_axis_to_roi(50.0, 175.0, 0.0, roi)
+        assert out_x == 100.0
+        assert out_y == 175.0
+
+    def test_diagonal_axis_hits_corner_on_inclination_line(self):
+        from preprocessing.roi_manager import clamp_pick_on_axis_to_roi
+
+        roi = (100, 100, 200, 150)
+        out_x, out_y = clamp_pick_on_axis_to_roi(50.0, 50.0, 45.0, roi)
+        assert out_x == pytest.approx(100.0)
+        assert out_y == pytest.approx(100.0)
+
+    def test_axis_line_passes_through_mask_centroid(self):
+        from preprocessing.roi_manager import clamp_centroid_for_pick
+
+        roi = (100, 100, 200, 150)
+        anchor = (50.0, 175.0)
+        angle = 30.0
+        pick_x, pick_y = clamp_centroid_for_pick(
+            anchor[0], anchor[1], roi, angle_deg=angle,
+        )
+        rad = math.radians(angle)
+        dx, dy = math.cos(rad), math.sin(rad)
+        cross = abs((pick_x - anchor[0]) * dy - (pick_y - anchor[1]) * dx)
+        assert cross < 1e-6
+
+    def test_without_angle_falls_back_to_orthogonal(self):
+        from preprocessing.roi_manager import clamp_centroid_for_pick
+
+        roi = (100, 100, 200, 150)
+        out_x, out_y = clamp_centroid_for_pick(50.0, 50.0, roi, angle_deg=None)
+        assert out_x == 100.0
+        assert out_y == 100.0

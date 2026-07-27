@@ -1,5 +1,7 @@
 # Realtec Vision Buddmeyer – uso no Ubuntu
 
+Baseline **v1607**. Índice: [OVERVIEW.md](OVERVIEW.md) · Modelo: [MODELO_MASK2FORMER.md](MODELO_MASK2FORMER.md) · Clone: [CLONE_BOX_PC.md](CLONE_BOX_PC.md).
+
 ## Compatibilidade
 
 O sistema foi desenvolvido para rodar em **macOS**, **Windows** e **Linux/Ubuntu**. Todas as bibliotecas principais (PySide6, PyTorch, OpenCV, aphyt) possuem suporte nativo para Linux.
@@ -121,4 +123,7 @@ Instale as dependências de sistema listadas acima, em especial `libxcb-cursor0`
 - Teste com `v4l2-ctl --list-devices` e `v4l2-ctl --list-formats-ext -d /dev/video0`.
 
 ### Sem GPU NVIDIA
-Use `detection.device: cpu` em `config.yaml`; a inferência será mais lenta, mas funcional.
+Use `detection.device: cpu` em `config.yaml`; a inferência será mais lenta, mas funcional. Ver riscos de latência em [MODELO_MASK2FORMER.md](MODELO_MASK2FORMER.md).
+
+### Modelo não carrega
+Confirme Git LFS (`git lfs pull`) e o tamanho de `model_best/model.safetensors` (~181 MB).

@@ -3,10 +3,10 @@
 | Campo | Valor |
 |--------|--------|
 | **Autor** | Realtec |
-| **Data** | 2026-07-16 |
-| **Estado** | proposta |
-| **Versão do sistema** | Buddmeyer Vision System v2.0 |
-| **Escopo** | Avaliação módulo a módulo e propostas de aprimoramento para operação contínua |
+| **Data** | 2026-07-21 |
+| **Estado** | parcial (P0 implementado; backlog P2 / aceitação 24×7 aberto) |
+| **Versão do sistema** | Buddmeyer Vision System v2.0 — baseline v1607 |
+| **Escopo** | Avaliação módulo a módulo; status do roadmap P0–P2 para operação contínua |
 
 ---
 
@@ -16,8 +16,8 @@ Este documento consolida a **avaliação técnica** do Realtec Vision Buddmeyer 
 
 - Diagnóstico do estado atual por módulo
 - Gaps em relação às melhores práticas de visão + motion
-- Propostas de aprimoramento priorizadas (P0–P2)
-- Feature proposta para **integração de coordenadas** com robô/CLP (sem implementar driver de robô nesta fase)
+- Roadmap priorizado (P0–P2) com **estado de implementação** (jul/2026)
+- Feature de **integração de coordenadas** com robô/CLP (scale v1 feito; affine/homography abertos)
 
 **Princípios orientadores:** estabilidade, resiliência, simplicidade, fácil manutenção e entendimento.
 
@@ -27,45 +27,48 @@ Este documento consolida a **avaliação técnica** do Realtec Vision Buddmeyer 
 
 ## 2. Diagnóstico executivo
 
-O sistema já possui uma **base sólida** para pick-and-place com visão:
+O sistema já possui uma **base sólida** para pick-and-place com visão, e a **Fase 0 / parte da Fase 1** do roadmap já está **implementada** na baseline v1607:
 
-- Pipeline Mask2Former bem instrumentado (`detection/`)
-- FSM explícita de handshake (`control/robot_controller.py`)
-- Contrato de tags documentado (`docs/TAG_CONTRACT.md`)
-- Seleção de pick por paralaxe (`detection/pick_selection.py`)
-- Logging estruturado dual-rail (`core/logger.py`)
+- Pipeline Mask2Former bem instrumentado (`detection/`) — ver [MODELO_MASK2FORMER.md](MODELO_MASK2FORMER.md)
+- FSM com handshake endurecido (`control/robot_controller.py`) — [FEATURE_FSM_HANDSHAKE_HARDENING.md](FEATURE_FSM_HANDSHAKE_HARDENING.md)
+- Contrato de tags documentado (`docs/TAG_CONTRACT.md` v1.1)
+- Seleção de pick por paralaxe + PickStabilizer — [FEATURE_PICK_SELECTION_PARALLAX.md](FEATURE_PICK_SELECTION_PARALLAX.md), [FEATURE_PICK_STABILIZER.md](FEATURE_PICK_STABILIZER.md)
+- `production_mode` fail-closed — [FEATURE_PRODUCTION_MODE.md](FEATURE_PRODUCTION_MODE.md)
+- Stream / inference auto-restart; audit SQLite (`core/audit_store.py`); log rotation
+- Coordinate scale v1 (`coordinate/transform.py`) — [FEATURE_COORDINATE_MAPPING.md](FEATURE_COORDINATE_MAPPING.md)
 
-Para **24×7 industrial**, os gaps principais **não são de algoritmo de visão**, mas de:
+Para **24×7 industrial desacompanhado**, os gaps restantes **não são de algoritmo de visão**, mas de:
 
-1. **Resiliência operacional** — auto-recovery de câmera, inferência e CLP
-2. **Fail-closed de segurança** — tags de safety e falhas não aplicadas de forma rigorosa
-3. **Único caminho de envio de coordenadas** — envio paralelo na UI conflita com a FSM
-4. **Observabilidade persistente** — sem audit trail entre restarts
+1. **Watchdog de processo** — sem systemd / modo headless / health endpoint
+2. **Calibração avançada** — affine/homography, wizard e export ainda abertos
+3. **Aceitação de campo** — soak 72 h e critérios da secção 11 ainda não fechados
+4. **Defaults de campo** — `config.yaml` shipped ainda com `production_mode: false` e `cip.max_retries: 3` (finito)
 
-**Conclusão:** o sistema é adequado para **piloto supervisionado**. Para operação contínua desacompanhada requer hardening em camadas P0–P2, conforme roadmap na secção 10.
+**Conclusão:** adequado para **piloto supervisionado / FAT de software** (incluindo SimulatedPLC). Para operação contínua desacompanhada, falta hardening P2 + critérios de aceitação da secção 11.
 
-### 2.1 Arquitetura atual vs. alvo
+### 2.1 Arquitetura atual vs. alvo 24×7
 
 ```mermaid
 flowchart LR
-    subgraph today [Estado atual]
-        Cam[Camera] --> Stream[StreamWorker]
-        Stream --> Infer[InferenceWorker]
-        Infer --> Pick[pick_selection]
-        Pick --> UI[OperationPage]
-        Pick --> FSM[RobotController FSM]
-        UI -->|"a cada 25 frames"| PLC_dup[Envio paralelo CLP]
-        FSM --> PLC[CIPClient]
+    subgraph today [Estado v1607]
+        Cam[Camera] --> Stream[Stream + auto-heal]
+        Stream --> Infer[Inference + restart]
+        Infer --> Pick[pick_selection + PickStabilizer]
+        Pick --> Transform[CoordinateTransform scale]
+        Transform --> FSM[FSM fail-closed path]
+        FSM --> PLC[CIPClient + SimulatedPLC]
+        FSM --> Audit[SQLite audit trail]
     end
 
-    subgraph target [Estado alvo]
+    subgraph target [Alvo 24x7 unattended]
         Cam2[Camera] --> Stream2[Stream + auto-heal]
         Stream2 --> Infer2[Inference + restart]
-        Infer2 --> Pick2[pick_selection + debounce]
-        Pick2 --> Transform[CoordinateTransform]
-        Transform --> FSM2[FSM fail-closed]
-        FSM2 --> PLC2[CIPClient backoff infinito]
-        FSM2 --> Audit[SQLite audit trail]
+        Infer2 --> Pick2[pick + stabilizer]
+        Pick2 --> Transform2[Affine or Homography]
+        Transform2 --> FSM2[FSM + cmd_id]
+        FSM2 --> PLC2[CIP max_retries 0]
+        FSM2 --> Audit2[SQLite audit]
+        Proc[systemd or headless] --> Cam2
     end
 ```
 
@@ -81,7 +84,8 @@ flowchart LR
 | Streaming | `streaming/` | Captura, adapters, health, MJPEG |
 | CLP | `communication/` | CIP client, tag map, SimulatedPLC |
 | Config | `config/` | Pydantic + YAML |
-| Infra | `core/` | Logs, métricas, exceções |
+| Infra | `core/` | Logs, métricas, exceções, audit SQLite |
+| Coordenadas | `coordinate/` | px→mm (scale v1) |
 | Testes | `tests/`, `scripts/` | Unitários, smoke tests |
 
 ---
@@ -417,18 +421,18 @@ O `RobotController` aplica escala px→mm, clamp ROI e unidade de área antes de
 
 ## 6. Melhores práticas pick-and-place (estado da arte)
 
-Práticas adotadas nesta avaliação, alinhadas ao domínio industrial:
+Práticas alinhadas ao domínio industrial — status na baseline v1607:
 
-| Prática | Situação no projeto | Proposta |
-|---------|---------------------|----------|
-| Separação visão/motion | Parcial — FSM mistura orquestração e envio | Visão produz pose; motion executa (Hand-Eye pattern) |
-| Handshake explícito | FSM completa | Reforçar tags fault + idempotência |
-| Temporal filtering | Ausente | PickStabilizer multi-frame |
-| Watchdog em camadas | Parcial | systemd + stream + inference + CLP |
-| Audit trail | In-session only | SQLite persistente |
-| Fail-closed safety | Fail-open em erro | production_mode rigoroso |
-| Calibração verificável | Escalar mm/px | Coordinate Mapping Layer |
-| Um caminho de comando | Duplicado (UI + FSM) | Remover envio paralelo |
+| Prática | Situação no projeto | Status |
+|---------|---------------------|--------|
+| Separação visão/motion | FSM orquestra; vision produz pose; sem driver de robô | Parcial (ok para CLP) |
+| Handshake explícito | FSM + fault tags (`VisionError` / `SystemFault`) | **Feito** (P0) |
+| Temporal filtering | `PickStabilizer` (`stable_frames`) | **Feito** |
+| Watchdog em camadas | Stream + inference + CIP; sem systemd/headless | Parcial |
+| Audit trail | SQLite `logs/audit.db` | **Feito** |
+| Fail-closed safety | `reliability.production_mode` | **Feito** (default shipped = off) |
+| Calibração verificável | Scale v1 (`coordinate/`); affine/homography abertos | Parcial |
+| Um caminho de comando | Só FSM; envio paralelo UI removido | **Feito** |
 
 ---
 
@@ -443,141 +447,88 @@ Práticas adotadas nesta avaliação, alinhadas ao domínio industrial:
 
 ---
 
-## 8. Feature proposta: Coordinate Mapping Layer
+## 8. Coordinate Mapping Layer — status
 
 ### 8.1 Objetivo
 
-Facilitar integração futura com robô/CLP **sem implementar driver de robô** nesta fase. Eliminar duplicação de conversão px→mm e ir além do escalar `mm_per_px`.
+Facilitar integração com robô/CLP **sem implementar driver de robô**. Eliminar duplicação de conversão px→mm e ir além do escalar `mm_per_px`.
 
-### 8.2 Problema atual
+### 8.2 Status v1607
 
-```
-pixel (centroide máscara) → × mm_per_px → clamp ROI → tags CLP (REAL)
-```
+| Item | Status |
+|------|--------|
+| Módulo `coordinate/transform.py` (modo **scale**) | **Implementado** |
+| Spec [FEATURE_COORDINATE_MAPPING.md](FEATURE_COORDINATE_MAPPING.md) | **Implementado** (v1 scale) |
+| Affine / Homography + wizard UI + export JSON | **Aberto** (P2) |
+| `TAG_CONTRACT.md` v1.1 (mm + ângulo + área) | **Feito** |
 
-Adequado para overlay e protótipo. Integradores robóticos precisam de:
-
-- Referencial consistente (vision frame → robot base/tool frame)
-- Calibração verificável e exportável
-- Pose completa (X, Y, θ) com metadados de confiança
-- Contrato estável independente de UI/FSM
-
-### 8.3 Solução: módulo `coordinate/`
+Pipeline atual (scale):
 
 ```
-realtec_vision_buddmeyer/coordinate/
-├── transform.py      # CoordinateTransform (Strategy pattern)
-├── models.py         # VisionPose, RobotPose, CalibrationProfile
-├── calibrators.py    # ScaleCalibration, AffineCalibration, HomographyCalibration
-└── export.py         # JSON/YAML export para integrador
+pixel (centróide máscara) → CoordinateTransform scale → clamp ROI → tags CLP (REAL)
 ```
 
-**Pipeline alvo:**
+### 8.3 Backlog (calibração avançada)
 
-```mermaid
-flowchart LR
-    Det[Detection centroid px + angle] --> VisionPose
-    VisionPose --> Transform[CoordinateTransform.apply]
-    Transform --> RobotPose
-    RobotPose --> PLC[write_detection_result]
-    RobotPose --> Export[JSON snapshot]
-```
-
-### 8.4 Modos de calibração
-
-| Modo | Entrada | Uso |
-|------|---------|-----|
-| `scale` | `mm_per_px` (atual) | Piloto, câmera perpendicular |
-| `affine` | 3+ pontos conhecidos (px ↔ mm robot) | Pick-and-place 2D padrão |
-| `homography` | 4+ pontos | Perspectiva / câmera inclinada |
-
-### 8.5 API para integrador
-
-```python
-@dataclass
-class RobotPose:
-    x_mm: float
-    y_mm: float
-    z_mm: float          # default 0 ou fixo configurável
-    angle_deg: float
-    frame_id: str        # ex. "robot_base"
-    confidence: float
-    timestamp: datetime
-
-class CoordinateTransform:
-    def vision_to_robot(self, cx_px, cy_px, angle_deg) -> RobotPose: ...
-    def validate_calibration(self) -> CalibrationReport: ...
-    def export_profile(self, path: Path) -> None: ...
-```
-
-### 8.6 UI mínima (Configuração → Calibração)
-
-- Wizard: clicar N pontos fiduciais na imagem + inserir coords robot correspondentes
-- Preview: overlay mostra coords vision vs robot side-by-side
-- Botão "Exportar perfil" → `calibration_profile.json`
-- RMS error da calibração exibido (aceitar/rejeitar)
-
-### 8.7 Contrato CLP
-
-Tags atuais (`CENTROID_X/Y`, `CENTROID_ANGLE`) passam a receber valores **pós-transform** quando calibração > scale. Documentar em revisão `TAG_CONTRACT.md` v1.1.
-
-### 8.8 Spec formal
-
-Criar `docs/FEATURE_COORDINATE_MAPPING.md` seguindo `docs/FEATURE_SPEC_TEMPLATE.md`.
+| Modo | Entrada | Uso | Status |
+|------|---------|-----|--------|
+| `scale` | `mm_per_px` | Piloto, câmera perpendicular | **Feito** |
+| `affine` | 3+ pontos px ↔ mm robot | Pick-and-place 2D | Aberto |
+| `homography` | 4+ pontos | Perspectiva / câmera inclinada | Aberto |
 
 **Não-objectivos:** driver TCP/UDP do robô, planeamento de trajetória, compensação Z dinâmica, array multi-pick no CLP.
 
 ---
 
-## 9. Avaliação geral
+## 9. Avaliação geral (jul/2026 — v1607)
 
-| Área | Maturidade | Pronto 24×7? |
-|------|------------|--------------|
-| Pipeline de visão | Alta | Sim (com estabilização) |
+| Área | Maturidade | Pronto 24×7 unattended? |
+|------|------------|-------------------------|
+| Pipeline de visão | Alta | Sim (com estabilização; soak de campo pendente) |
 | Seleção de pick | Alta | Sim |
-| FSM / handshake | Média-alta | Com correções P0 |
-| Resiliência runtime | Baixa-média | Não |
-| Segurança industrial | Baixa | Não (fail-open) |
-| Observabilidade | Média | Parcial (sem persistência) |
-| Integração coordenadas | Baixa | Requer feature secção 8 |
-| Deploy / watchdog | Baixa | Requer systemd + runbook |
+| FSM / handshake | Alta | Sim (P0 feito) |
+| Resiliência runtime | Média-alta | Parcial (código sim; watchdog de processo não) |
+| Segurança industrial | Média | Código pronto; default shipped = `production_mode: false` |
+| Observabilidade | Média-alta | Audit SQLite + logs; sem Prometheus |
+| Integração coordenadas | Média | Scale v1; affine/homography abertos |
+| Deploy / watchdog | Baixa | Requer systemd + headless + runbook de soak |
 
-**Veredicto:** arquitetura **sólida para extensão**; hardening operacional **incompleto** para operação desacompanhada 24×7.
+**Veredicto:** arquitetura **sólida para piloto supervisionado**; P0 de resiliência **implementado**. Hardening **P2 + aceitação de campo** ainda **incompleto** para operação desacompanhada 24×7.
 
 ---
 
-## 10. Roadmap priorizado
+## 10. Roadmap priorizado — status
 
-### Fase 0 — Correções estruturais (P0, ~1–2 semanas)
+### Fase 0 — Correções estruturais (P0) — **CONCLUÍDA**
 
-| Item | Módulos | Impacto |
-|------|---------|---------|
-| Remover envio paralelo `_communicate_centroid_to_plc` | `ui/operation_page` | Elimina race/confusão integrador |
-| `production_mode` + fail-closed CLP/safety | `config`, `communication`, `control` | Segurança industrial |
-| Reconnect CLP infinito com backoff | `communication/cip_client` | Resiliência 24×7 |
-| `SystemFault`/`VisionError` em falhas | `communication`, `control` | Visibilidade CLP |
-| Log rotation | `core/logger` | Disco não enche |
+| Item | Módulos | Status |
+|------|---------|--------|
+| Remover envio paralelo `_communicate_centroid_to_plc` | `ui/operation_page` | **Feito** |
+| `production_mode` + fail-closed CLP/safety | `config`, `communication`, `control` | **Feito** |
+| Reconnect CLP com backoff (`max_retries`; `0` = infinito) | `communication/cip_client` | **Feito** (YAML shipped usa `3`) |
+| `SystemFault`/`VisionError` em falhas | `communication`, `control` | **Feito** |
+| Log rotation | `core/logger` | **Feito** |
 
-### Fase 1 — Resiliência runtime (P0/P1, ~2–3 semanas)
+### Fase 1 — Resiliência runtime (P0/P1) — **CONCLUÍDA**
 
-| Item | Módulos | Impacto |
-|------|---------|---------|
-| Stream auto-restart | `streaming/stream_manager` | Câmera desconectada |
-| Inference worker restart | `detection/inference_engine` | GPU hang |
-| Pick stabilizer (debounce) | `detection/` | Pick estável |
-| SystemHealthBanner | `ui/` | Operador vê causa raiz |
-| SQLite audit trail | `core/` ou `persistence/` | RCA pós-mortem |
+| Item | Módulos | Status |
+|------|---------|--------|
+| Stream auto-restart | `streaming/stream_manager` | **Feito** |
+| Inference worker restart | `detection/inference_engine` | **Feito** |
+| Pick stabilizer (debounce) | `detection/pick_stabilizer` | **Feito** |
+| SystemHealthBanner / painel saúde | `ui/` | **Feito** |
+| SQLite audit trail | `core/audit_store.py` | **Feito** |
 
-### Fase 2 — Integração de coordenadas (~2–3 semanas)
+### Fase 2 — Integração de coordenadas — **PARCIAL**
 
-| Item | Módulos | Impacto |
-|------|---------|---------|
-| Módulo `coordinate/` + migração scale | novo, `control`, `detection` | API integrador |
-| Wizard calibração affine | `ui/configuration_page` | Calibração em campo |
-| Export JSON perfil | `coordinate/export` | Handoff robótica |
-| Testes transform + FSM integrado | `tests/` | Confiança |
+| Item | Módulos | Status |
+|------|---------|--------|
+| Módulo `coordinate/` + modo scale | `coordinate/`, `control` | **Feito** |
+| Wizard calibração affine | `ui/configuration_page` | Aberto |
+| Export JSON perfil | `coordinate/export` | Aberto |
+| Testes transform + FSM | `tests/` | Parcial (scale coberto) |
 
-### Fase 3 — Hardening avançado (P2, conforme necessidade)
+### Fase 3 — Hardening avançado (P2) — **ABERTA**
 
 - Homography calibration
 - ROI crop inference
@@ -585,19 +536,27 @@ Criar `docs/FEATURE_COORDINATE_MAPPING.md` seguindo `docs/FEATURE_SPEC_TEMPLATE.
 - Headless/service mode
 - Soak test 72 h + systemd unit
 - Export métricas Prometheus (opcional)
+- Perfis `config.sim.yaml` / `config.production.yaml` (recomendado)
 
 ---
 
 ## 11. Critérios de aceitação — "pronto 24×7"
 
+Código / desenho (v1607):
+
+- [x] `production_mode=true` impede SimulatedPLC e fail-open safety (quando ativado)
+- [x] Um único caminho de envio de coordenadas (FSM)
+- [x] Audit SQLite para ciclos/falhas (`logs/audit.db`)
+- [x] Logs rotacionados (`logging.max_bytes` / `backup_count`)
+
+Aceitação de campo / deploy (ainda abertos):
+
 - [ ] 72 h soak sem crescimento de memória > 5%
-- [ ] Desconexão CLP > 1 h recupera automaticamente
-- [ ] Desconexão câmera USB/GigE recupera em < 60 s
-- [ ] `production_mode=true` impede SimulatedPLC e fail-open safety
-- [ ] Um único caminho de envio de coordenadas (FSM)
-- [ ] Audit SQLite com 100% dos ciclos completos/falhos
-- [ ] Perfil de calibração exportável e RMS < tolerância configurada
-- [ ] Logs rotacionados; disco estável por 30 dias
+- [ ] Desconexão CLP > 1 h recupera automaticamente (`max_retries: 0` em produção)
+- [ ] Desconexão câmera USB/GenTL recupera em < 60 s (validado em campo)
+- [ ] Perfil de calibração exportável e RMS < tolerância (affine+)
+- [ ] Disco estável por 30 dias sob carga real
+- [ ] systemd / supervisor + (opcional) modo headless
 
 ---
 
@@ -605,14 +564,21 @@ Criar `docs/FEATURE_COORDINATE_MAPPING.md` seguindo `docs/FEATURE_SPEC_TEMPLATE.
 
 | Documento | Relação |
 |-----------|---------|
+| [OVERVIEW.md](OVERVIEW.md) | Índice da documentação |
+| [MODELO_MASK2FORMER.md](MODELO_MASK2FORMER.md) | Modelo de visão (versão, riscos) |
 | [REFERENCE.md](REFERENCE.md) | Referência técnica da arquitetura atual |
 | [TAG_CONTRACT.md](TAG_CONTRACT.md) | Contrato de tags CLP |
 | [SEGMENTATION_PIPELINE.md](SEGMENTATION_PIPELINE.md) | Pipeline de visão |
-| [FEATURE_PICK_SELECTION_PARALLAX.md](FEATURE_PICK_SELECTION_PARALLAX.md) | Seleção de pick implementada |
-| [PICK_PLACE_EXPEDICAO.md](PICK_PLACE_EXPEDICAO.md) | Fluxo operacional atual |
+| [FEATURE_FSM_HANDSHAKE_HARDENING.md](FEATURE_FSM_HANDSHAKE_HARDENING.md) | Handshake P0 |
+| [FEATURE_PRODUCTION_MODE.md](FEATURE_PRODUCTION_MODE.md) | Fail-closed |
+| [FEATURE_PICK_STABILIZER.md](FEATURE_PICK_STABILIZER.md) | Estabilização de pick |
+| [FEATURE_COORDINATE_MAPPING.md](FEATURE_COORDINATE_MAPPING.md) | Coordenadas scale v1 |
+| [FEATURE_PICK_SELECTION_PARALLAX.md](FEATURE_PICK_SELECTION_PARALLAX.md) | Seleção de pick |
+| [PICK_PLACE_EXPEDICAO.md](PICK_PLACE_EXPEDICAO.md) | Fluxo operacional (sim/manual) |
+| [RUNBOOK_INTEGRACAO_CLP.md](RUNBOOK_INTEGRACAO_CLP.md) | Integração CLP real |
 | [ARQUITETURA_FEATURES.md](ARQUITETURA_FEATURES.md) | Decisões arquiteturais |
 | [FEATURE_SPEC_TEMPLATE.md](FEATURE_SPEC_TEMPLATE.md) | Template para novas features |
 
 ---
 
-© Realtec — Buddmeyer Vision System v2.0
+© Realtec — Buddmeyer Vision System v2.0 (baseline v1607)

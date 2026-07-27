@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional
 if TYPE_CHECKING:
     from detection.events import Detection
 
-from preprocessing.roi_manager import clamp_centroid_to_roi
+from preprocessing.roi_manager import clamp_centroid_for_pick
 
 PickSelectionMethod = Literal[
     "area_then_conf",
@@ -115,7 +115,12 @@ def scale_detection_metrics(
     mm_per_px = float(mm_per_px) or 1.0
     cx_px, cy_px = detection.centroid
     if roi_enabled and roi and len(roi) == 4:
-        cx_px, cy_px = clamp_centroid_to_roi(cx_px, cy_px, tuple(roi))
+        cx_px, cy_px = clamp_centroid_for_pick(
+            cx_px,
+            cy_px,
+            tuple(roi),
+            angle_deg=detection.angle_deg,
+        )
     area_px = float(detection.effective_area_px)
     area_mm2 = area_px_to_mm2(area_px, mm_per_px)
     area_cm2 = area_mm2 / 100.0

@@ -59,7 +59,7 @@ class TestConfigurationPage:
         """Aba Saída tem botão Copiar URL que gera URL HTTP válida."""
         url = config_page._get_stream_url()
         assert url.startswith("http://")
-        assert "/stream" in url
+        assert config_page._http_path.text() in url or "/stream" in url
 
     def test_copy_stream_url_to_clipboard(self, config_page):
         """Copiar URL cola conteúdo HTTP válido na área de transferência."""
@@ -70,6 +70,64 @@ class TestConfigurationPage:
         clipboard = QApplication.clipboard()
         assert clipboard.text().startswith("http://")
         assert "/stream" in clipboard.text()
+
+    def test_get_stream_url_uses_custom_path(self, config_page):
+        """_get_stream_url honra http_path da UI."""
+        config_page._http_path.setText("/cam")
+        config_page._http_port.setValue(9090)
+        url = config_page._get_stream_url()
+        assert url.endswith(":9090/cam")
+        assert "/stream" not in url.split("9090", 1)[-1]
+
+    def test_save_persists_custom_http_path(self, config_page, monkeypatch):
+        """Salvar não força /stream; persiste path custom e emite settings_saved."""
+        from PySide6.QtWidgets import QMessageBox
+        from config.settings import Settings
+
+        monkeypatch.setattr(
+            QMessageBox, "information", lambda *a, **k: QMessageBox.Ok
+        )
+
+        saved = {}
+
+        def fake_to_yaml(self, path):
+            saved["path"] = str(path)
+            saved["http_path"] = self.output.http_path
+            saved["rtsp_enabled"] = self.output.rtsp_enabled
+            saved["http_port"] = self.output.http_port
+
+        monkeypatch.setattr(Settings, "to_yaml", fake_to_yaml)
+
+        config_page._http_path.setText("/video")
+        config_page._http_port.setValue(18080)
+        config_page._rtsp_enabled.setChecked(True)
+
+        emitted = []
+        config_page.settings_saved.connect(lambda: emitted.append(True))
+        config_page._save_settings()
+
+        assert saved["http_path"] == "/video"
+        assert saved["http_port"] == 18080
+        assert saved["rtsp_enabled"] is True
+        assert emitted == [True]
+        assert config_page._http_path.text() == "/video"
+
+    def test_copy_stream_url_enables_and_emits(self, config_page, monkeypatch):
+        """Copiar URL liga stream, persiste e emite settings_saved."""
+        from PySide6.QtWidgets import QMessageBox
+
+        monkeypatch.setattr(
+            QMessageBox, "information", lambda *a, **k: QMessageBox.Ok
+        )
+        monkeypatch.setattr(config_page, "_persist_output_yaml", lambda: None)
+
+        emitted = []
+        config_page.settings_saved.connect(lambda: emitted.append(True))
+        config_page._copy_stream_url()
+
+        assert config_page._settings.output.rtsp_enabled is True
+        assert emitted == [True]
+        assert config_page._get_stream_url(localhost=True).startswith("http://127.0.0.1:")
 
     def test_imagem_tab_has_roi(self, config_page):
         """Aba Imagem tem configuração de ROI."""

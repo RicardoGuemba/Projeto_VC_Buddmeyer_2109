@@ -3,6 +3,7 @@
 Gerenciamento de Region of Interest (ROI).
 """
 
+import math
 from dataclasses import dataclass
 from typing import Tuple, Optional, List, Union, Any
 import numpy as np
@@ -24,11 +25,23 @@ def confine_centroid_for_pick(
     cx: float,
     cy: float,
     preprocess: Any,
+    angle_deg: Optional[float] = None,
 ) -> Tuple[float, float]:
-    """Projeta centroide ao ROI quando confinamento está activo."""
+    """
+    Projeta ponto de pick ao ROI quando confinamento está activo.
+
+    Com ``angle_deg``, desloca ao longo do eixo de inclinação (passando pelo
+    centróide da máscara) até entrar no ROI, preservando colinearidade com o
+    centro geométrico do objeto.
+    """
     if not is_roi_confinement_active(preprocess):
         return cx, cy
-    return clamp_centroid_to_roi(cx, cy, tuple(preprocess.roi))
+    return clamp_centroid_for_pick(
+        cx,
+        cy,
+        tuple(preprocess.roi),
+        angle_deg=angle_deg,
+    )
 
 
 def clamp_centroid_to_roi(
@@ -52,6 +65,76 @@ def clamp_centroid_to_roi(
         r = ROI.from_tuple(roi)
     else:
         r = roi
+    return r.clamp_point(cx, cy)
+
+
+def clamp_centroid_for_pick(
+    cx: float,
+    cy: float,
+    roi: Union[Tuple[int, int, int, int], "ROI"],
+    angle_deg: Optional[float] = None,
+) -> Tuple[float, float]:
+    """
+    Confinamento do ponto de pick ao ROI.
+
+    Com orientação disponível, desliza ao longo do eixo maior (através do
+    centróide da máscara) em vez de projectar independentemente em X e Y.
+    """
+    if angle_deg is not None:
+        return clamp_pick_on_axis_to_roi(cx, cy, float(angle_deg), roi)
+    return clamp_centroid_to_roi(cx, cy, roi)
+
+
+def _point_in_roi_bounds(r: "ROI", x: float, y: float) -> bool:
+    return float(r.x) <= x <= float(r.x2) and float(r.y) <= y <= float(r.y2)
+
+
+def clamp_pick_on_axis_to_roi(
+    cx: float,
+    cy: float,
+    angle_deg: float,
+    roi: Union[Tuple[int, int, int, int], "ROI"],
+) -> Tuple[float, float]:
+    """
+    Confinamento colinear: ponto de pick sobre o eixo de inclinação que passa
+    pelo centróide da máscara, o mais próximo possível do centro do objeto.
+
+    O eixo permanece ancorado no centróide geométrico; apenas o ponto enviado
+    ao CLP é deslocado ao longo desse eixo até entrar no ROI.
+    """
+    if isinstance(roi, tuple):
+        r = ROI.from_tuple(roi)
+    else:
+        r = roi
+
+    if _point_in_roi_bounds(r, cx, cy):
+        return cx, cy
+
+    rad = math.radians(float(angle_deg))
+    dx = math.cos(rad)
+    dy = math.sin(rad)
+
+    t_candidates: List[float] = []
+    eps = 1e-9
+
+    if abs(dx) > eps:
+        for x_edge in (float(r.x), float(r.x2)):
+            t = (x_edge - cx) / dx
+            y = cy + t * dy
+            if float(r.y) <= y <= float(r.y2):
+                t_candidates.append(t)
+
+    if abs(dy) > eps:
+        for y_edge in (float(r.y), float(r.y2)):
+            t = (y_edge - cy) / dy
+            x = cx + t * dx
+            if float(r.x) <= x <= float(r.x2):
+                t_candidates.append(t)
+
+    if t_candidates:
+        t_best = min(t_candidates, key=abs)
+        return cx + t_best * dx, cy + t_best * dy
+
     return r.clamp_point(cx, cy)
 
 

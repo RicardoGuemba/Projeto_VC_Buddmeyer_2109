@@ -19,12 +19,13 @@ python -m scripts.validate_handshake
 | Documento | Propósito |
 |-----------|-----------|
 | [OVERVIEW.md](OVERVIEW.md) | Índice geral |
+| [MODELO_MASK2FORMER.md](MODELO_MASK2FORMER.md) | Modelo de visão (versão, riscos) |
 | [REFERENCE.md](REFERENCE.md) | Referência técnica |
 | [TAG_CONTRACT.md](TAG_CONTRACT.md) | Contrato CLP v1.1 |
 | [RUNBOOK_INTEGRACAO_CLP.md](RUNBOOK_INTEGRACAO_CLP.md) | Deploy pré-CLP |
-| [AVALIACAO_24x7_PICK_PLACE.md](AVALIACAO_24x7_PICK_PLACE.md) | Roadmap |
+| [AVALIACAO_24x7_PICK_PLACE.md](AVALIACAO_24x7_PICK_PLACE.md) | Status 24×7 (P0 feito; aceitação aberta) |
 | `FEATURE_*.md` | Specs por etapa FSM |
 
 ## Limpeza de artefactos
 
-Removidos quando não usados em runtime: `model_best/training_args.bin`, `.DS_Store`.
+Removidos do conjunto mínimo de deploy quando não usados em runtime: `model_best/training_args.bin`, `.DS_Store`. Pesos obrigatórios: `model.safetensors` + `config.json` + `preprocessor_config.json` + `task.json`.

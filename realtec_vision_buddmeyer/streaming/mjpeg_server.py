@@ -8,7 +8,7 @@ Compatível com Windows, macOS e Linux.
 import socket
 import threading
 import time
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
 
 import cv2
@@ -59,53 +59,158 @@ def is_port_available(host: str, port: int) -> bool:
         return False
 
 
+def normalize_http_path(path: Optional[str]) -> str:
+    """Normaliza path HTTP do stream (sempre com leading slash)."""
+    raw = (path or "").strip() or "/stream"
+    return raw if raw.startswith("/") else f"/{raw}"
+
+
+def _placeholder_jpeg(width: int = 640, height: int = 480) -> bytes:
+    """JPEG estático enquanto a câmera ainda não enviou frames."""
+    img = np.zeros((height, width, 3), dtype=np.uint8)
+    img[:] = (32, 32, 32)
+    cv2.putText(
+        img,
+        "Aguardando camera...",
+        (40, height // 2),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1.0,
+        (200, 200, 200),
+        2,
+        cv2.LINE_AA,
+    )
+    ok, buf = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+    if not ok or buf is None:
+        return b""
+    return buf.tobytes()
+
+
 BOUNDARY = "frame"
+_PLACEHOLDER_JPEG = _placeholder_jpeg()
 
 
 class MjpegHandler(BaseHTTPRequestHandler):
     """Handler HTTP que serve stream MJPEG (multipart/x-mixed-replace)."""
 
-    server_instance: Optional["MjpegServer"] = None
+    # HTTP/1.0: stream sem Content-Length funciona melhor em browsers + http.client
+    protocol_version = "HTTP/1.0"
 
     def log_message(self, format, *args):
         """Reduz logs de acesso (evita poluir console)."""
-        logger.debug("http_request", method=self.command, path=self.path, client=self.client_address[0])
+        logger.debug(
+            "http_request",
+            method=self.command,
+            path=self.path,
+            client=self.client_address[0],
+        )
+
+    @property
+    def mjpeg(self) -> Optional["MjpegServer"]:
+        return getattr(self.server, "mjpeg", None)
+
+    def do_HEAD(self):
+        """HEAD rápido (alguns browsers fazem prefetch)."""
+        self._serve_path(body=False)
 
     def do_GET(self):
-        """Responde GET com stream MJPEG ou 404."""
-        if self.server_instance is None:
+        """Responde GET com HTML viewer, stream MJPEG ou 404."""
+        self._serve_path(body=True)
+
+    def _serve_path(self, body: bool) -> None:
+        mjpeg = self.mjpeg
+        if mjpeg is None:
             self.send_error(500, "Server not configured")
             return
 
         path = self.path.split("?")[0].rstrip("/") or "/"
-        config_path = self.server_instance.path.rstrip("/") or "/"
-        if path != config_path:
+        stream_path = mjpeg.path.rstrip("/") or "/"
+
+        # Favicon / assets: responde rápido para não bloquear o browser
+        if path in ("/favicon.ico", "/robots.txt"):
+            self.send_response(204)
+            self.send_header("Content-Length", "0")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            return
+
+        # Página HTML com <img> — útil se o utilizador abrir a raiz
+        if path == "/":
+            html = (
+                "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+                f"<title>Realtec Stream</title></head><body style='margin:0;background:#111;color:#eee;"
+                "font-family:sans-serif;text-align:center'>"
+                "<p style='padding:12px'>Stream MJPEG — "
+                f"<a style='color:#8cf' href='{stream_path}'>{stream_path}</a></p>"
+                f"<img src='{stream_path}' alt='stream' "
+                "style='max-width:100%;height:auto;background:#000'/>"
+                "</body></html>"
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(html)))
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            if body:
+                self.wfile.write(html)
+            return
+
+        if path != stream_path:
             self.send_error(404, f"Not Found: {self.path}")
             return
 
+        if not body:
+            self.send_response(200)
+            self.send_header(
+                "Content-Type",
+                f'multipart/x-mixed-replace; boundary="{BOUNDARY}"',
+            )
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            return
+
+        self._stream_mjpeg(mjpeg)
+
+    def _stream_mjpeg(self, mjpeg: "MjpegServer") -> None:
+        """Loop multipart — envia placeholder até haver frames reais; ritmo contínuo."""
         self.send_response(200)
-        self.send_header("Content-Type", f"multipart/x-mixed-replace; boundary={BOUNDARY}")
+        self.send_header(
+            "Content-Type",
+            f'multipart/x-mixed-replace; boundary="{BOUNDARY}"',
+        )
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
         self.send_header("Pragma", "no-cache")
         self.send_header("Expires", "0")
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
 
         try:
-            while True:
-                frame = self.server_instance.get_latest_frame()
+            while mjpeg.is_running:
+                frame = mjpeg.get_latest_frame()
                 if frame is None:
-                    time.sleep(0.033)  # ~30 Hz poll, evita busy loop
-                    continue
-                _, jpeg = cv2.imencode(".jpg", frame)
-                if jpeg is None:
-                    time.sleep(0.033)
-                    continue
-                data = jpeg.tobytes()
+                    data = _PLACEHOLDER_JPEG
+                else:
+                    ok, jpeg = cv2.imencode(
+                        ".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80]
+                    )
+                    if not ok or jpeg is None:
+                        time.sleep(0.033)
+                        continue
+                    data = jpeg.tobytes()
+
                 self.wfile.write(f"--{BOUNDARY}\r\n".encode())
                 self.wfile.write(b"Content-Type: image/jpeg\r\n")
                 self.wfile.write(f"Content-Length: {len(data)}\r\n\r\n".encode())
                 self.wfile.write(data)
                 self.wfile.write(b"\r\n")
+                try:
+                    self.wfile.flush()
+                except Exception:
+                    break
+                time.sleep(0.066)  # ~15 fps
         except (BrokenPipeError, ConnectionResetError):
             pass
         except Exception as e:
@@ -121,10 +226,11 @@ class MjpegServer:
     def __init__(self, host: str = "0.0.0.0", port: int = 8080, path: str = "/stream"):
         self._host = host
         self._port = port
-        self._path = path if path.startswith("/") else f"/{path}"
-        self._server: Optional[HTTPServer] = None
+        self._path = normalize_http_path(path)
+        self._server: Optional[ThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
         self._latest_frame: Optional[np.ndarray] = None
+        self._frame_seq: int = 0
         self._lock = threading.Lock()
         self._running = False
 
@@ -132,10 +238,19 @@ class MjpegServer:
     def path(self) -> str:
         return self._path
 
+    @property
+    def port(self) -> int:
+        return self._port
+
+    @property
+    def is_running(self) -> bool:
+        return self._running
+
     def push_frame(self, frame: np.ndarray) -> None:
         """Atualiza o frame mais recente (thread-safe)."""
         with self._lock:
             self._latest_frame = frame.copy() if frame is not None else None
+            self._frame_seq += 1
 
     def get_latest_frame(self) -> Optional[np.ndarray]:
         """Retorna o frame mais recente (thread-safe)."""
@@ -144,8 +259,12 @@ class MjpegServer:
                 return self._latest_frame.copy()
         return None
 
+    def get_frame_seq(self) -> int:
+        """Número de sequência do último push (para pacing do stream)."""
+        with self._lock:
+            return self._frame_seq
     def start(self) -> bool:
-        """Inicia o servidor em thread separada."""
+        """Inicia o servidor em thread separada (ThreadingHTTPServer)."""
         if self._running:
             return True
         if not is_port_available(self._host, self._port):
@@ -156,8 +275,9 @@ class MjpegServer:
             )
             return False
         try:
-            MjpegHandler.server_instance = self
-            self._server = HTTPServer((self._host, self._port), MjpegHandler)
+            self._server = ThreadingHTTPServer((self._host, self._port), MjpegHandler)
+            self._server.mjpeg = self  # type: ignore[attr-defined]
+            self._server.daemon_threads = True
             self._thread = threading.Thread(target=self._serve, daemon=True)
             self._thread.start()
             self._running = True
@@ -200,10 +320,15 @@ class MjpegServer:
                 self._latest_frame = None
             return
         self._running = False
-        MjpegHandler.server_instance = None
         if self._server:
-            self._server.shutdown()
-            self._server.server_close()
+            try:
+                self._server.shutdown()
+            except Exception:
+                pass
+            try:
+                self._server.server_close()
+            except Exception:
+                pass
             self._server = None
         if self._thread:
             self._thread.join(timeout=2.0)

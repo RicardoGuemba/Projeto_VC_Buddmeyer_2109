@@ -518,11 +518,13 @@ class RobotController(QObject):
             plc_data = self._current_detection.to_plc_data()
             centroid_x_px = plc_data["centroid_x"]
             centroid_y_px = plc_data["centroid_y"]
+            pick_angle = self._current_detection.angle_deg
 
             centroid_x_px, centroid_y_px = confine_centroid_for_pick(
                 centroid_x_px,
                 centroid_y_px,
                 self._settings.preprocess,
+                angle_deg=pick_angle,
             )
 
             mm_per_px = getattr(

@@ -4,6 +4,8 @@ Este documento descreve o pipeline de detecção atualizado baseado em
 **instance segmentation** (modelo `Mask2FormerForUniversalSegmentation`
 treinado pelo cliente, em `realtec_vision_buddmeyer/model_best/`).
 
+Versão, origem, justificativa de uso e riscos do artefacto: **[MODELO_MASK2FORMER.md](MODELO_MASK2FORMER.md)**.
+
 O objetivo é fornecer à plataforma de pick-and-place três informações
 por embalagem, cada uma derivada da máscara e, portanto, mais robusta
 do que o bounding box:

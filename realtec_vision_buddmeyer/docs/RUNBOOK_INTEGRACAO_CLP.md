@@ -2,11 +2,14 @@
 
 Checklist pré-deploy e validação no box PC antes de `production_mode: true`.
 
+Índice: [OVERVIEW.md](OVERVIEW.md) · Contrato: [TAG_CONTRACT.md](TAG_CONTRACT.md) · Modelo: [MODELO_MASK2FORMER.md](MODELO_MASK2FORMER.md)
+
 ## 1. Pré-requisitos
 
 - Rede EtherNet/IP: PC e CLP na mesma sub-rede; IP em `config/config.yaml` → `cip.ip`
 - Tags físicas alinhadas a `docs/TAG_CONTRACT.md` v1.1
 - `preprocess.roi_calibration_mm_per_px` calibrado em campo
+- Modelo carregável (`model_best/` completo via Git LFS)
 
 ## 2. Dev / piloto (simulado)
 

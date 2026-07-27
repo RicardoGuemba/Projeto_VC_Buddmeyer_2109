@@ -1,6 +1,9 @@
 # Manual – Câmera GenTL (Omron Sentech) e melhorias de desempenho
 
-Documento que descreve tudo o que foi implementado e alterado para suporte à câmera **GenTL (Harvester / Omron Sentech)**, correções de travamento da UI e carregamento do modelo em segundo plano.
+**Escopo (v1607):** fonte **GenTL** (Harvester / Omron Sentech) na aba Operação, juntamente com USB. Este manual cobre adapters GenTL, UI de ajustes GenICam, proteções de UI e carregamento do modelo em segundo plano.  
+Não substitui o índice geral ([OVERVIEW.md](OVERVIEW.md)) nem o doc do modelo ([MODELO_MASK2FORMER.md](MODELO_MASK2FORMER.md)).
+
+Documento que descreve o que foi implementado e alterado para suporte à câmera **GenTL (Harvester / Omron Sentech)**, correções de travamento da UI e carregamento do modelo em segundo plano.
 
 ---
 

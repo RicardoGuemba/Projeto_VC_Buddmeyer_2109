@@ -30,7 +30,7 @@ from .pick_selection import (
     scale_all_detections,
     select_pick_target,
 )
-from preprocessing.roi_manager import clamp_centroid_to_roi
+from preprocessing.roi_manager import clamp_centroid_for_pick
 
 
 @dataclass
@@ -324,7 +324,9 @@ class DetectionEvent:
 
         cx, cy = best.centroid
         if roi_enabled and roi and len(roi) == 4:
-            cx, cy = clamp_centroid_to_roi(cx, cy, tuple(roi))
+            cx, cy = clamp_centroid_for_pick(
+                cx, cy, tuple(roi), angle_deg=best.angle_deg,
+            )
 
         return cls(
             detected=True,

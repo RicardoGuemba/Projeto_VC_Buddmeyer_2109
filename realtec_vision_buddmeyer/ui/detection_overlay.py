@@ -21,7 +21,7 @@ from ui.overlay_constants import (
     format_centroid_metrics_summary,
     is_pick_detection,
 )
-from preprocessing.roi_manager import clamp_centroid_to_roi
+from preprocessing.roi_manager import clamp_centroid_for_pick
 
 
 def ordered_detections_for_overlay(
@@ -185,10 +185,16 @@ def draw_detection_masks_on_frame(
         if not drew_mask:
             cv2.rectangle(out, (x1, y1), (x2, y2), color, thickness)
 
-        cx_f, cy_f = det.centroid
+        axis_cx, axis_cy = det.centroid
+        pick_cx, pick_cy = axis_cx, axis_cy
         if roi_enabled and roi and len(roi) == 4:
-            cx_f, cy_f = clamp_centroid_to_roi(cx_f, cy_f, tuple(roi))
-        cx, cy = int(cx_f), int(cy_f)
+            pick_cx, pick_cy = clamp_centroid_for_pick(
+                axis_cx,
+                axis_cy,
+                tuple(roi),
+                angle_deg=getattr(det, "angle_deg", None) if is_pick else None,
+            )
+        cx, cy = int(pick_cx), int(pick_cy)
         cv2.circle(out, (cx, cy), 8 if is_pick else 6, color, 2)
 
         if is_pick and getattr(det, "has_orientation", False) and getattr(det, "angle_deg", None) is not None:
@@ -200,14 +206,16 @@ def draw_detection_masks_on_frame(
             )
             dx = math.cos(math.radians(angle)) * half
             dy = math.sin(math.radians(angle)) * half
-            p1 = (int(cx_f - dx), int(cy_f - dy))
-            p2 = (int(cx_f + dx), int(cy_f + dy))
+            p1 = (int(axis_cx - dx), int(axis_cy - dy))
+            p2 = (int(axis_cx + dx), int(axis_cy + dy))
             cv2.line(out, p1, p2, (255, 0, 255), 3)
+            if abs(pick_cx - axis_cx) > 0.5 or abs(pick_cy - axis_cy) > 0.5:
+                cv2.circle(out, (int(axis_cx), int(axis_cy)), 4, (255, 255, 255), 1)
 
         angle = getattr(det, "angle_deg", None) if getattr(det, "has_orientation", False) else None
         metrics_text = format_centroid_metrics_summary(
-            cx_f,
-            cy_f,
+            pick_cx,
+            pick_cy,
             det.effective_area_px,
             angle,
             mm_per_px,

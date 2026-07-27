@@ -59,9 +59,17 @@ class TestConfigurationFlow:
             page._tabs.setCurrentIndex(i)
             assert page._tabs.currentIndex() == i
 
-    def test_reset_loads_defaults(self, qtbot):
+    def test_reset_loads_defaults(self, qtbot, monkeypatch):
         """Restaurar Padrões carrega valores padrão nos widgets."""
+        from PySide6.QtWidgets import QMessageBox
         from ui.pages.configuration_page import ConfigurationPage
+
+        monkeypatch.setattr(
+            QMessageBox, "question", lambda *a, **k: QMessageBox.Yes
+        )
+        monkeypatch.setattr(
+            QMessageBox, "information", lambda *a, **k: QMessageBox.Ok
+        )
 
         page = ConfigurationPage()
         qtbot.addWidget(page)

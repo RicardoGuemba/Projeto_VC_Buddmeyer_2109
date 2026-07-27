@@ -1,5 +1,6 @@
 {
   "do_normalize": true,
+  "do_pad": true,
   "do_reduce_labels": false,
   "do_rescale": true,
   "do_resize": true,
@@ -16,7 +17,7 @@
     0.22499999403953552
   ],
   "num_labels": 80,
-  "pad_size": null,
+  "reduce_labels": false,
   "resample": 2,
   "rescale_factor": 0.00392156862745098,
   "size": {

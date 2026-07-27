@@ -23,7 +23,7 @@ from coordinate.transform import get_coordinate_transform
 from core.logger import get_logger
 from core.metrics import MetricsCollector
 from streaming import StreamManager
-from streaming.mjpeg_server import MjpegServer
+from streaming.mjpeg_server import MjpegServer, normalize_http_path
 from detection import InferenceEngine
 from detection.pick_selection import area_for_plc, select_pick_target
 from communication import CIPClient
@@ -568,35 +568,82 @@ class OperationPage(QWidget):
         asyncio.create_task(self._connect_plc_and_start_robot())
         self._is_running = True
 
-        if self._settings.output.rtsp_enabled:
-            self._mjpeg_server = MjpegServer(
-                host="0.0.0.0",
-                port=self._settings.output.http_port,
-                path=self._settings.output.http_path or "/stream",
-            )
-            if self._mjpeg_server.start():
-                time.sleep(0.2)
-                local_url, net_url = self._mjpeg_server.get_stream_urls()
-                self._event_console.add_success(
-                    f"Stream HTTP: {net_url}"
-                )
-                self._event_console.add_info(
-                    f"Mesmo PC: {local_url} | Outros dispositivos: {net_url}"
-                )
-                self._event_console.add_info(
-                    "ERR_CONNECTION_REFUSED? Permita o app no firewall "
-                    f"(porta {self._settings.output.http_port})"
-                )
-            else:
-                self._mjpeg_server = None
-                self._event_console.add_error(
-                    f"Porta {self._settings.output.http_port} em uso. "
-                    "Feche outro app ou mude em Configuração → Saída."
-                )
+        self.apply_output_stream_settings(from_system_start=True)
 
         self._update_ui_state()
         self._event_console.add_success(f"Sistema iniciado [{source_label}]")
         self._status_panel.set_system_status("RUNNING")
+
+    def apply_output_stream_settings(self, from_system_start: bool = False) -> None:
+        """
+        Aplica output.rtsp_enabled / http_port / http_path ao servidor MJPEG.
+
+        O stream pode correr sem Operação ▶ Iniciar (placeholder até haver câmera).
+        """
+        enabled = bool(self._settings.output.rtsp_enabled)
+        port = int(self._settings.output.http_port)
+        path = normalize_http_path(self._settings.output.http_path)
+
+        if not enabled:
+            if self._mjpeg_server is not None:
+                self._stop_mjpeg_server()
+                self._event_console.add_info("Stream HTTP desligado")
+            return
+
+        needs_restart = (
+            self._mjpeg_server is None
+            or self._mjpeg_server.port != port
+            or self._mjpeg_server.path != path
+        )
+        if not needs_restart:
+            return
+
+        self._stop_mjpeg_server()
+        self._start_mjpeg_server(port=port, path=path)
+
+    def restore_output_stream_if_configured(self) -> None:
+        """Re-liga o stream HTTP ao abrir o app se já estava activo (Copiar URL anterior)."""
+        if self._settings.output.rtsp_enabled:
+            self.apply_output_stream_settings()
+
+    def _start_mjpeg_server(self, port: int, path: str) -> None:
+        """Inicia MjpegServer e reporta URL no console."""
+        self._mjpeg_server = MjpegServer(
+            host="0.0.0.0",
+            port=port,
+            path=path,
+        )
+        if self._mjpeg_server.start():
+            deadline = time.monotonic() + 0.5
+            while time.monotonic() < deadline:
+                if self._mjpeg_server.verify_listening(timeout=0.05):
+                    break
+                time.sleep(0.05)
+            local_url, net_url = self._mjpeg_server.get_stream_urls()
+            self._event_console.add_success(f"Stream HTTP: {net_url}")
+            self._event_console.add_info(
+                f"Mesmo PC: {local_url} | Outros dispositivos: {net_url}"
+            )
+            self._event_console.add_info(
+                "ERR_CONNECTION_REFUSED? Permita o app no firewall "
+                f"(porta {port})"
+            )
+        else:
+            self._mjpeg_server = None
+            self._event_console.add_error(
+                f"Porta {port} em uso. "
+                "Feche outro app ou mude em Configuração → Saída."
+            )
+
+    def _stop_mjpeg_server(self) -> None:
+        """Para e limpa o servidor MJPEG se existir."""
+        if self._mjpeg_server is None:
+            return
+        try:
+            self._mjpeg_server.stop()
+        except Exception as e:
+            self._logger.warning("mjpeg_stop_error", error=str(e))
+        self._mjpeg_server = None
     
     @Slot(bool)
     def _on_model_load_finished(self, success: bool) -> None:
@@ -669,6 +716,7 @@ class OperationPage(QWidget):
             self._stop_system()
         else:
             self._robot_controller.stop()
+        self._stop_mjpeg_server()
         self._cip_client.shutdown_for_exit()
 
     async def _connect_plc_and_start_robot(self) -> None:
@@ -754,12 +802,9 @@ class OperationPage(QWidget):
 
         self._event_console.add_info("Parando sistema...")
 
-        if self._mjpeg_server is not None:
-            try:
-                self._mjpeg_server.stop()
-            except Exception as e:
-                self._logger.warning("mjpeg_stop_error", error=str(e))
-            self._mjpeg_server = None
+        # Mantém stream HTTP se foi activado (Copiar URL) — browser continua a funcionar
+        if not self._settings.output.rtsp_enabled:
+            self._stop_mjpeg_server()
 
         self._robot_controller.stop()
         self._inference_engine.stop()

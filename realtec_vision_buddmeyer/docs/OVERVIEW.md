@@ -2,7 +2,8 @@
 
 Sistema de visão industrial pick-and-place: captura por **câmera USB/GenTL**, segmentação Mask2Former, handshake FSM com CLP Omron.
 
-**Repo:** `Projeto_VC_Buddmeyer_v1607` — ver [MIGRACAO_PROJETO_VC_BUDDMEYER_v1607.md](MIGRACAO_PROJETO_VC_BUDDMEYER_v1607.md).
+**Repo / baseline:** `Projeto_VC_Buddmeyer_v1607` (`v1607-stable`) — ver [MIGRACAO_PROJETO_VC_BUDDMEYER_v1607.md](MIGRACAO_PROJETO_VC_BUDDMEYER_v1607.md).  
+**App:** v2.0.0 · **Modelo:** [MODELO_MASK2FORMER.md](MODELO_MASK2FORMER.md)
 
 ## Fluxo operacional
 
@@ -17,11 +18,13 @@ Sistema de visão industrial pick-and-place: captura por **câmera USB/GenTL**, 
 |------|-----------|
 | Operador | [GUIA_OPERADOR.md](GUIA_OPERADOR.md) |
 | Técnica | [REFERENCE.md](REFERENCE.md) |
+| Modelo de visão | [MODELO_MASK2FORMER.md](MODELO_MASK2FORMER.md) |
 | CLP / tags | [TAG_CONTRACT.md](TAG_CONTRACT.md) v1.1 |
 | Integração CLP | [RUNBOOK_INTEGRACAO_CLP.md](RUNBOOK_INTEGRACAO_CLP.md) |
 | Pipeline visão | [SEGMENTATION_PIPELINE.md](SEGMENTATION_PIPELINE.md) |
 | GenTL | [MANUAL_GENTL(GIGE).md](MANUAL_GENTL(GIGE).md) |
-| Roadmap 24×7 | [AVALIACAO_24x7_PICK_PLACE.md](AVALIACAO_24x7_PICK_PLACE.md) |
+| Status 24×7 | [AVALIACAO_24x7_PICK_PLACE.md](AVALIACAO_24x7_PICK_PLACE.md) (P0 feito; aceitação de campo aberta) |
+| Clone box PC | [CLONE_BOX_PC.md](CLONE_BOX_PC.md) |
 
 ### Features implementadas (resiliência FSM)
 

@@ -13,12 +13,12 @@ from PySide6.QtWidgets import (
     QLabel, QFileDialog, QSlider, QFrame, QMessageBox,
     QScrollArea, QGridLayout, QApplication
 )
-from PySide6.QtCore import Qt, Slot
+from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtGui import QFont
 
 from config import get_settings
 from core.logger import get_logger
-from streaming.mjpeg_server import get_local_ip
+from streaming.mjpeg_server import get_local_ip, normalize_http_path
 
 logger = get_logger("config")
 
@@ -54,6 +54,8 @@ class ConfigurationPage(QWidget):
     - Controle (CLP)
     - Output
     """
+
+    settings_saved = Signal()
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -481,7 +483,7 @@ class ConfigurationPage(QWidget):
         return widget
     
     def _create_output_tab(self) -> QWidget:
-        """Aba Saída: servidor HTTP MJPEG – copie a URL e cole no navegador."""
+        """Aba Saída: um clique copia a URL e liga o stream HTTP MJPEG."""
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setSpacing(16)
@@ -490,21 +492,41 @@ class ConfigurationPage(QWidget):
         stream_group.setStyleSheet(CONFIG_GROUP_STYLE)
         stream_layout = QFormLayout(stream_group)
         
-        self._rtsp_enabled = QCheckBox("Habilitar stream para navegador")
-        stream_layout.addRow("", self._rtsp_enabled)
+        # Legado YAML; não exposto na UI — activado ao clicar Copiar URL
+        self._rtsp_enabled = QCheckBox()
+        self._rtsp_enabled.setVisible(False)
         
         self._http_port = QSpinBox()
         self._http_port.setRange(1, 65535)
         self._http_port.setValue(8080)
         stream_layout.addRow("Porta:", self._http_port)
+
+        self._http_path = QLineEdit("/stream")
+        self._http_path.setPlaceholderText("/stream")
+        self._http_path.setToolTip("Path HTTP do stream (ex.: /stream)")
+        stream_layout.addRow("Path:", self._http_path)
         
-        copy_btn = QPushButton("Copiar URL")
-        copy_btn.setToolTip("Copia a URL para a área de transferência. Cole na barra de endereços do navegador.")
+        copy_btn = QPushButton("Copiar URL do stream")
+        copy_btn.setToolTip(
+            "Liga o stream, copia a URL e cole no Chrome/Firefox/Edge."
+        )
+        copy_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2563eb;
+                color: white;
+                font-weight: bold;
+                padding: 10px 16px;
+                border-radius: 4px;
+            }
+            QPushButton:hover { background-color: #1d4ed8; }
+        """)
         copy_btn.clicked.connect(self._copy_stream_url)
         stream_layout.addRow("", copy_btn)
         
         url_help = QLabel(
-            "Clique em 'Copiar URL' e cole na barra de endereços do Chrome, Firefox ou Edge."
+            "Clique no botão acima → cole a URL no navegador. "
+            "Com Operação ▶ Iniciado, o vídeo ao vivo aparece; "
+            "caso contrário, verá aguardando câmera."
         )
         url_help.setStyleSheet("color: #8b9dc3; font-size: 11px;")
         url_help.setWordWrap(True)
@@ -515,20 +537,47 @@ class ConfigurationPage(QWidget):
         
         return widget
     
-    def _get_stream_url(self) -> str:
-        """Retorna a URL do stream HTTP (IP:porta/stream)."""
+    def _sync_output_settings(self, *, enable_stream: bool = False) -> None:
+        """Sincroniza widgets Saída → settings (memória)."""
+        s = self._settings
+        if enable_stream:
+            self._rtsp_enabled.setChecked(True)
+        s.output.rtsp_enabled = self._rtsp_enabled.isChecked() or enable_stream
+        s.output.http_port = self._http_port.value()
+        s.output.http_path = normalize_http_path(self._http_path.text())
+        self._http_path.setText(s.output.http_path)
+
+    def _persist_output_yaml(self) -> None:
+        """Grava config.yaml (silencioso ao copiar URL)."""
+        config_path = Path(__file__).parent.parent.parent / "config" / "config.yaml"
+        self._settings.to_yaml(config_path)
+
+    def _get_stream_url(self, localhost: bool = False) -> str:
+        """Retorna URL do stream (localhost = mesmo PC)."""
         port = self._http_port.value()
-        host = get_local_ip()
-        return f"http://{host}:{port}/stream"
+        path = normalize_http_path(self._http_path.text())
+        host = "127.0.0.1" if localhost else get_local_ip()
+        return f"http://{host}:{port}{path}"
 
     def _copy_stream_url(self) -> None:
-        """Copia a URL HTTP para a área de transferência."""
-        url = self._get_stream_url()
-        clipboard = QApplication.clipboard()
-        clipboard.setText(url)
+        """Liga stream, persiste, aplica no servidor e copia URL (127.0.0.1)."""
+        self._sync_output_settings(enable_stream=True)
+        self._persist_output_yaml()
+        self.settings_saved.emit()
+
+        url = self._get_stream_url(localhost=True)
+        QApplication.clipboard().setText(url)
+        logger.info(
+            "stream_url_copied",
+            url=url,
+            port=self._settings.output.http_port,
+            path=self._settings.output.http_path,
+        )
         QMessageBox.information(
-            self, "Copiado",
-            f"URL copiada para a área de transferência:\n{url}\n\nCole na barra de endereços do navegador."
+            self,
+            "Stream pronto",
+            f"URL copiada:\n{url}\n\n"
+            "Cole na barra de endereços do navegador.",
         )
     
     def _load_settings(self) -> None:
@@ -593,6 +642,7 @@ class ConfigurationPage(QWidget):
         # Output
         self._rtsp_enabled.setChecked(s.output.rtsp_enabled)
         self._http_port.setValue(s.output.http_port)
+        self._http_path.setText(normalize_http_path(s.output.http_path))
     
     def _save_settings(self) -> None:
         """Salva configurações."""
@@ -638,10 +688,8 @@ class ConfigurationPage(QWidget):
         s.cip.max_retries = self._max_retries.value()
         s.cip.heartbeat_interval = self._heartbeat_interval.value()
         
-        # Output
-        s.output.rtsp_enabled = self._rtsp_enabled.isChecked()
-        s.output.http_port = self._http_port.value()
-        s.output.http_path = "/stream"
+        # Output (HTTP MJPEG; rtsp_enabled activado via Copiar URL)
+        self._sync_output_settings()
         
         # Salva em arquivo
         config_path = Path(__file__).parent.parent.parent / "config" / "config.yaml"
@@ -651,8 +699,13 @@ class ConfigurationPage(QWidget):
             "config_saved",
             cip_ip=s.cip.ip,
             cip_port=s.cip.port,
+            http_stream=s.output.rtsp_enabled,
+            http_port=s.output.http_port,
+            http_path=s.output.http_path,
             config_path=str(config_path),
         )
+
+        self.settings_saved.emit()
         
         QMessageBox.information(self, "Sucesso", "Configurações salvas com sucesso!")
     
