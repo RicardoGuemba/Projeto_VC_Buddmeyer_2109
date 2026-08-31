@@ -32,6 +32,9 @@ dist/
 *.pt
 *.pth
 *.onnx
+realtec_vision_buddmeyer/model_best/model_best/
+realtec_vision_buddmeyer/model_best/training_args/
+realtec_vision_buddmeyer/model_best/training_args.zip
 
 # === Datasets ===
 datasets/

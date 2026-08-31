@@ -1,3 +1,4 @@
+config_version: 1
 log_level: INFO
 log_file: logs/realtec_vision.log
 streaming:
@@ -17,7 +18,7 @@ streaming:
 detection:
   model_path: model_best
   default_model: model_best
-  confidence_threshold: 0.61
+  confidence_threshold: 0.5
   max_detections: 10
   target_classes:
   - Embalagem
@@ -38,15 +39,15 @@ preprocess:
   brightness: 0.0
   contrast: 0.0
   roi:
-  - 155
-  - 117
-  - 337
-  - 282
-  roi_enabled: false
+  - 181
+  - 101
+  - 277
+  - 277
+  roi_enabled: true
   roi_unit: px
   roi_calibration_mm_per_px: 1.0
 cip:
-  ip: 187.99.124.229
+  ip: 192.168.0.10
   port: 44818
   connection_timeout: 10.0
   timeout_ms: 10000
@@ -65,6 +66,10 @@ robot_control:
   bypass_authorization: false
 reliability:
   production_mode: false
+  auto_start_operation: false
+  plc_sync_on_startup: true
+  inhibit_power_management: true
+  kiosk_fullscreen: false
   stream_auto_restart: true
   inference_auto_restart: true
 logging:
@@ -105,6 +110,6 @@ tags:
   SafetyLightCurtainOK: Safety_LightCurtainOK
   SafetyEmergencyStop: Safety_EmergencyStop
 output:
-  rtsp_enabled: false
+  rtsp_enabled: true
   http_port: 8080
   http_path: /stream

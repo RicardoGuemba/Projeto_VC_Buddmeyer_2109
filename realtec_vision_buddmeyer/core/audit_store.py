@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -42,6 +43,12 @@ class AuditStore:
                     reason TEXT NOT NULL,
                     state TEXT
                 );
+                CREATE TABLE IF NOT EXISTS recoveries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts TEXT NOT NULL,
+                    resolved_state TEXT NOT NULL,
+                    snapshot_json TEXT NOT NULL
+                );
                 """
             )
 
@@ -69,6 +76,17 @@ class AuditStore:
             conn.execute(
                 "INSERT INTO faults (ts, reason, state) VALUES (?, ?, ?)",
                 (ts, reason, state),
+            )
+
+    def record_recovery(self, resolved_state: str, snapshot: Dict[str, Any]) -> None:
+        ts = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO recoveries (ts, resolved_state, snapshot_json)
+                VALUES (?, ?, ?)
+                """,
+                (ts, resolved_state, json.dumps(snapshot, sort_keys=True)),
             )
 
     def count_cycles(self) -> int:

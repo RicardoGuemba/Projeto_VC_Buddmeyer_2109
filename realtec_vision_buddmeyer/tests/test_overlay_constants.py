@@ -38,3 +38,13 @@ class TestOverlayConstants:
 
         b, g, r = OTHER_MASK_COLOR_BGR
         assert b > r and b > g
+
+    def test_opencv_safe_label_strips_unicode(self):
+        from ui.overlay_constants import opencv_safe_label
+
+        text = opencv_safe_label("A:207.3cm² ∠62° (pick)")
+        assert "?" not in text
+        assert text.isascii()
+        assert "cm2" in text
+        assert "ang:62deg" in text
+        assert "(pick)" in text

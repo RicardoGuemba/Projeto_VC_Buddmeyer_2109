@@ -236,6 +236,7 @@ class CIPClient(QObject):
         self._reconnect_timer: Optional[QTimer] = None
         self._reconnect_attempts = 0
         self._max_reconnect_attempts = self._settings.cip.max_retries
+        self._exiting = False
     
     def _reload_connection_config(self) -> None:
         """Recarrega IP, porta e timeout da configuração atual (arquivo/UI)."""
@@ -256,6 +257,8 @@ class CIPClient(QObject):
         Returns:
             True se conectado com sucesso
         """
+        if getattr(self, "_exiting", False):
+            self._exiting = False
         if self._state.is_connected:
             return True
         
@@ -352,6 +355,7 @@ class CIPClient(QObject):
     
     def shutdown_for_exit(self) -> None:
         """Para timers CLP e libera estado ao encerrar a app (síncrono, não bloqueia)."""
+        self._exiting = True
         self._stop_heartbeat()
         if self._reconnect_timer is not None:
             self._reconnect_timer.stop()
@@ -361,7 +365,6 @@ class CIPClient(QObject):
         self._simulated_plc = None
         if self._state.is_connected:
             self._update_state(ConnectionStatus.DISCONNECTED)
-            self.disconnected.emit()
         logger.info("cip_shutdown_for_exit")
 
     async def disconnect(self) -> None:
@@ -400,6 +403,8 @@ class CIPClient(QObject):
         Returns:
             Valor do TAG
         """
+        if getattr(self, "_exiting", False):
+            raise CIPConnectionError("Cliente CIP em shutdown")
         if not self._state.is_connected:
             raise CIPConnectionError("Não conectado ao CLP")
         
@@ -492,6 +497,8 @@ class CIPClient(QObject):
         Returns:
             True se escrito com sucesso
         """
+        if getattr(self, "_exiting", False):
+            raise CIPConnectionError("Cliente CIP em shutdown")
         if not self._state.is_connected:
             raise CIPConnectionError("Não conectado ao CLP")
         
@@ -665,6 +672,8 @@ class CIPClient(QObject):
     
     def _schedule_reconnect(self) -> None:
         """Agenda tentativa de reconexão após retry_interval (RNF-02)."""
+        if getattr(self, "_exiting", False):
+            return
         if self._reconnect_timer is not None:
             return
         interval_ms = int(self._settings.cip.retry_interval * 1000)
@@ -686,6 +695,7 @@ class CIPClient(QObject):
     async def _try_reconnect(self) -> None:
         """Desconecta e tenta reconectar (usado por reconexão automática)."""
         self._reconnect_attempts += 1
+        self._state.reconnect_attempts = self._reconnect_attempts
         max_attempts = self._settings.cip.max_retries
         # max_retries=0 significa reconexão infinita
         if max_attempts > 0 and self._reconnect_attempts > max_attempts:
@@ -702,6 +712,7 @@ class CIPClient(QObject):
         await self.connect()
         if self._state.is_connected:
             self._reconnect_attempts = 0
+            self._state.reconnect_attempts = 0
             logger.info("cip_reconnect_ok")
     
     def _start_heartbeat(self) -> None:

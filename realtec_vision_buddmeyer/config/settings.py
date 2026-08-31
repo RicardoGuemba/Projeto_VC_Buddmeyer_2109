@@ -187,7 +187,7 @@ class PreprocessSettings(BaseModel):
 class CIPSettings(BaseModel):
     """Configurações de comunicação CIP."""
     
-    ip: str = Field(default="187.99.124.229", description="IP do CLP")
+    ip: str = Field(default="192.168.0.10", description="IP do CLP")
     port: int = Field(default=44818, description="Porta CIP")
     connection_timeout: float = Field(default=10.0, ge=1.0, description="Timeout de conexão (s)")
     timeout_ms: int = Field(default=10000, ge=1000, description="Timeout de operação (ms)")
@@ -206,6 +206,22 @@ class ReliabilitySettings(BaseModel):
     production_mode: bool = Field(
         default=False,
         description="True: fail-closed, sem fallback SimulatedPLC silencioso",
+    )
+    auto_start_operation: bool = Field(
+        default=False,
+        description="Inicia Operação automaticamente após preload do modelo (box PC)",
+    )
+    plc_sync_on_startup: bool = Field(
+        default=True,
+        description="Sincroniza FSM com tags do CLP após reboot (estado seguro coerente)",
+    )
+    inhibit_power_management: bool = Field(
+        default=True,
+        description="Bloqueia sleep/screensaver do SO durante Operação activa",
+    )
+    kiosk_fullscreen: bool = Field(
+        default=False,
+        description="Arranca em fullscreen e restringe Config em production_mode",
     )
     stream_auto_restart: bool = Field(default=True, description="Reinicia captura após UNHEALTHY")
     inference_auto_restart: bool = Field(default=True, description="Reinicia worker após erros consecutivos")
@@ -288,6 +304,8 @@ class Settings(BaseSettings):
         extra="ignore",
     )
     
+    config_version: int = Field(default=1, ge=1, description="Versão do schema YAML")
+
     # Logging
     log_level: str = Field(default="INFO", description="Nível de log")
     log_file: Optional[str] = Field(default="logs/realtec_vision.log", description="Arquivo de log")
@@ -330,6 +348,23 @@ class Settings(BaseSettings):
     def get_base_path(self) -> Path:
         """Retorna o caminho base do projeto."""
         return Path(__file__).parent.parent
+
+    def resolve_path(self, relative: str) -> Path:
+        """Resolve caminho relativo à raiz do pacote."""
+        path = Path(relative)
+        if path.is_absolute():
+            return path
+        return self.get_base_path() / path
+
+    def get_log_file_path(self) -> Path:
+        """Caminho absoluto do ficheiro de log principal."""
+        if not self.log_file:
+            return self.get_base_path() / "logs" / "realtec_vision.log"
+        return self.resolve_path(self.log_file)
+
+    def get_audit_db_path(self) -> Path:
+        """Caminho absoluto da base SQLite de audit."""
+        return self.resolve_path("logs/audit.db")
     
     def get_models_path(self) -> Path:
         """Retorna o caminho absoluto do diretório de modelos."""

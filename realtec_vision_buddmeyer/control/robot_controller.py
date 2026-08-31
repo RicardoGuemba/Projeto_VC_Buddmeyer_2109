@@ -21,6 +21,7 @@ from detection.events import DetectionEvent
 from detection.pick_selection import area_for_plc
 from coordinate.transform import get_coordinate_transform
 from core.audit_store import get_audit_store
+from control.plc_recovery import read_plc_snapshot, resolve_safe_state
 
 logger = get_logger("control.robot")
 
@@ -269,9 +270,12 @@ class RobotController(QObject):
         """Retorna modo de ciclo atual."""
         return self._cycle_mode
     
-    def start(self) -> bool:
+    def start(self, initial_state: Optional[RobotControlState] = None) -> bool:
         """
         Inicia o controlador.
+        
+        Args:
+            initial_state: Estado inicial após recovery PLC (opcional)
         
         Returns:
             True se iniciado com sucesso
@@ -287,15 +291,64 @@ class RobotController(QObject):
         self._bypass_authorization = self._settings.robot_control.bypass_authorization
         
         self._is_running = True
-        self._transition_to(RobotControlState.INITIALIZING)
+        if initial_state is not None:
+            self._force_state(initial_state)
+        else:
+            self._transition_to(RobotControlState.INITIALIZING)
         
         # Inicia polling
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._poll_cycle)
         self._poll_timer.start(self._poll_interval)
         
-        logger.info("robot_controller_started")
+        logger.info("robot_controller_started", initial_state=initial_state.value if initial_state else None)
         return True
+
+    async def prepare_plc_recovery_state(self) -> Optional[RobotControlState]:
+        """
+        Lê tags do CLP, limpa tags Vision de handshake e resolve estado seguro.
+
+        Returns:
+            Estado FSM coerente ou None se plc_sync desactivado / CLP desconectado
+        """
+        reliability = getattr(self._settings, "reliability", None)
+        if reliability is not None and not getattr(reliability, "plc_sync_on_startup", True):
+            return None
+
+        if not self._cip_client._state.is_connected:
+            logger.warning("plc_recovery_skipped_not_connected")
+            return None
+
+        production = getattr(reliability, "production_mode", False)
+        snapshot = await read_plc_snapshot(self._cip_client)
+        resolved_name = resolve_safe_state(snapshot, production_mode=production)
+        resolved = RobotControlState(resolved_name)
+
+        await self._clear_vision_handshake_tags()
+        try:
+            get_audit_store().record_recovery(
+                resolved_state=resolved.value,
+                snapshot=snapshot.to_dict(),
+            )
+        except Exception as audit_err:
+            logger.warning("audit_recovery_failed", error=str(audit_err))
+
+        logger.info(
+            "plc_recovery_resolved",
+            state=resolved.value,
+            snapshot=snapshot.to_dict(),
+        )
+        return resolved
+
+    async def _clear_vision_handshake_tags(self) -> None:
+        """Limpa tags Vision que não devem persistir após reboot."""
+        try:
+            await self._cip_client.write_tag("VisionDataSent", False)
+            await self._cip_client.set_vision_busy(False)
+            await self._cip_client.set_vision_echo_ack(False)
+            self._vision_busy = False
+        except Exception as e:
+            logger.warning("clear_vision_handshake_tags_failed", error=str(e))
     
     def stop(self) -> None:
         """Para o controlador."""
@@ -791,6 +844,8 @@ class RobotController(QObject):
 
     async def _sync_vision_busy(self, state: RobotControlState) -> None:
         """Sincroniza VisionBusy com o estado da FSM."""
+        if getattr(self._cip_client, "_exiting", False):
+            return
         busy = state in _BUSY_STATES
         if busy == self._vision_busy:
             return
@@ -800,6 +855,26 @@ class RobotController(QObject):
         except Exception as e:
             logger.warning("vision_busy_sync_failed", error=str(e))
     
+    def _force_state(self, new_state: RobotControlState) -> None:
+        """Força estado (recovery pós-reboot; ignora matriz de transição)."""
+        old_state = self._state
+        duration_s = (datetime.now() - self._state_enter_time).total_seconds()
+        self._previous_state = old_state
+        self._state = new_state
+        self._state_enter_time = datetime.now()
+        logger.info(
+            "state_forced",
+            from_state=old_state.value,
+            to_state=new_state.value,
+            duration_s=round(duration_s, 2),
+        )
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._sync_vision_busy(new_state))
+        except RuntimeError:
+            pass
+        self.state_changed.emit(new_state.value)
+
     def _transition_to(self, new_state: RobotControlState) -> None:
         # Valida transição
         if new_state not in VALID_TRANSITIONS.get(self._state, set()):

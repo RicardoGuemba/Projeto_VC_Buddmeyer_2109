@@ -20,6 +20,7 @@ from ui.overlay_constants import (
     PICK_MASK_FILL_ALPHA,
     format_centroid_metrics_summary,
     is_pick_detection,
+    opencv_safe_label,
 )
 from preprocessing.roi_manager import clamp_centroid_for_pick
 
@@ -61,6 +62,7 @@ def draw_overlay_label(
     color = PICK_LABEL_COLOR_BGR if is_pick else OTHER_LABEL_COLOR_BGR
     x, y = origin
     font = cv2.FONT_HERSHEY_SIMPLEX
+    text = opencv_safe_label(text)
     cv2.putText(
         frame, text, (x, y), font, LABEL_FONT_SCALE,
         LABEL_OUTLINE_COLOR_BGR, LABEL_OUTLINE_THICKNESS, lineType=cv2.LINE_AA,
@@ -220,6 +222,7 @@ def draw_detection_masks_on_frame(
             angle,
             mm_per_px,
             is_pick=is_pick,
+            ascii_safe=True,
         )
         class_label = f"{det.class_name} {det.confidence:.0%}"
         if is_pick:

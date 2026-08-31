@@ -6,11 +6,10 @@ Gerenciador principal de streaming de vídeo.
 import time
 from pathlib import Path
 from threading import Lock
-import time
 from typing import Optional, Dict, Any
 
 import numpy as np
-from PySide6.QtCore import QObject, Signal, QThread, QMutex, QWaitCondition
+from PySide6.QtCore import QObject, Signal, QThread, QMutex, QWaitCondition, QTimer
 
 from config import get_settings
 from core.logger import get_logger
@@ -102,14 +101,14 @@ class StreamWorker(QThread):
         self._pause_condition.wakeAll()
         self._mutex.unlock()
     
-    def stop(self) -> None:
-        """Para a captura."""
+    def stop(self, timeout_ms: int = 5000) -> None:
+        """Para a captura sem bloquear indefinidamente a GUI."""
         self._running = False
         self._mutex.lock()
         self._paused = False
         self._pause_condition.wakeAll()
         self._mutex.unlock()
-        self.wait()
+        self.wait(max(1, int(timeout_ms)))
 
 
 class StreamManager(QObject):
@@ -168,6 +167,8 @@ class StreamManager(QObject):
         self._current_frame: Optional[FrameInfo] = None
         self._unhealthy_since: Optional[float] = None
         self._last_source_config: Optional[Dict[str, Any]] = None
+        self._health_timer: Optional[QTimer] = None
+        self._shutting_down = False
         
         # Conecta sinais de health
         self._health.health_changed.connect(self._on_health_changed)
@@ -185,22 +186,35 @@ class StreamManager(QObject):
         Returns:
             True se iniciado com sucesso
         """
+        if self._shutting_down:
+            logger.warning("stream_start_blocked_shutting_down")
+            return False
         if self._is_running:
             logger.warning("stream_already_running")
             return True
         
         return self._start_with_current_settings()
+
+    def prepare_shutdown(self) -> None:
+        """Impede auto-restart e para o timer de health antes do stop de saída."""
+        self._shutting_down = True
+        self._stop_health_timer()
+
+    def clear_shutdown_guard(self) -> None:
+        """Permite novo start() após um shutdown (novo ciclo de operação / testes)."""
+        self._shutting_down = False
     
-    def stop(self) -> None:
+    def stop(self, timeout_ms: int = 5000) -> None:
         """Para o streaming."""
+        self._stop_health_timer()
         if not self._is_running:
             return
         
         # Para worker
         if self._worker is not None:
-            self._worker.stop()
+            self._worker.stop(timeout_ms=timeout_ms)
             if self._worker.isRunning():
-                self._worker.wait(5000)
+                self._worker.wait(min(timeout_ms, 500))
             self._worker.deleteLater()
             self._worker = None
         
@@ -459,6 +473,7 @@ class StreamManager(QObject):
             self._worker.start()
             self._is_running = True
             self._health.reset()
+            self._start_health_timer()
             
             logger.info(
                 "stream_started",
@@ -543,8 +558,22 @@ class StreamManager(QObject):
         self._health.record_drop()
         self.stream_error.emit(error)
 
+    def _start_health_timer(self) -> None:
+        """Timer dedicado para avaliar saúde do stream (independente da UI/FSM)."""
+        if self._health_timer is None:
+            self._health_timer = QTimer(self)
+            self._health_timer.timeout.connect(self._health.check_health)
+        if not self._health_timer.isActive():
+            self._health_timer.start(1000)
+
+    def _stop_health_timer(self) -> None:
+        if self._health_timer is not None and self._health_timer.isActive():
+            self._health_timer.stop()
+
     def _on_health_changed(self, info) -> None:
         """Auto-restart quando stream UNHEALTHY por tempo configurado."""
+        if self._shutting_down:
+            return
         if not getattr(self._settings.reliability, "stream_auto_restart", True):
             return
         if info.status == HealthStatus.UNHEALTHY:
@@ -560,11 +589,13 @@ class StreamManager(QObject):
 
     def _attempt_stream_recovery(self) -> None:
         """Reinicia captura após degradação prolongada."""
-        if not self._is_running:
+        if self._shutting_down or not self._is_running:
             return
         logger.info("stream_recovery_attempted")
         self._unhealthy_since = None
         self.stop()
+        if self._shutting_down:
+            return
         self.start()
 
 

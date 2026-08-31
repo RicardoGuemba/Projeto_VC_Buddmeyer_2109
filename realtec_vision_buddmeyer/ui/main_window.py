@@ -56,6 +56,7 @@ class MainWindow(QMainWindow):
         self._apply_theme()
         self._schedule_model_preload()
         self._schedule_output_stream_restore()
+        self._apply_kiosk_mode()
         
         logger.info("main_window_initialized")
     
@@ -213,6 +214,22 @@ class MainWindow(QMainWindow):
             self._operation_page.apply_output_stream_settings
         )
     
+    def _apply_kiosk_mode(self) -> None:
+        """Fullscreen e restrições de UI para box PC de campo."""
+        reliability = getattr(self._settings, "reliability", None)
+        if reliability is None:
+            return
+        if getattr(reliability, "kiosk_fullscreen", False):
+            self.showFullScreen()
+        if getattr(reliability, "production_mode", False) and getattr(reliability, "kiosk_fullscreen", False):
+            self._tabs.setTabEnabled(1, False)
+
+    def _schedule_auto_start_operation(self) -> None:
+        """Agenda auto-start da Operação após preload do modelo."""
+        if not getattr(self._settings.reliability, "auto_start_operation", False):
+            return
+        QTimer.singleShot(3000, self._operation_page.auto_start_if_configured)
+
     def _on_tab_changed(self, index: int) -> None:
         """Ao mudar para Operação, atualiza ROI das configurações."""
         if index == 0:  # Operação
@@ -252,8 +269,11 @@ class MainWindow(QMainWindow):
         """Chamado quando o pré-carregamento do modelo termina."""
         if success:
             self._statusbar.showMessage("Modelo pronto para uso.", 5000)
+            self._schedule_auto_start_operation()
         else:
             self._statusbar.showMessage("Modelo será carregado ao clicar em Iniciar.", 5000)
+            if getattr(self._settings.reliability, "auto_start_operation", False):
+                self._schedule_auto_start_operation()
     
     def _apply_theme(self) -> None:
         """Aplica tema RTC Integração Industrial (Manual de Marca)."""
@@ -464,7 +484,7 @@ class MainWindow(QMainWindow):
             <p><b>Tecnologias:</b></p>
             <ul>
                 <li>PySide6 (Qt for Python)</li>
-                <li>PyTorch + RT-DETR</li>
+                <li>PyTorch + Mask2Former</li>
                 <li>OpenCV</li>
                 <li>aphyt (CIP/EtherNet-IP)</li>
             </ul>

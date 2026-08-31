@@ -1,6 +1,6 @@
 # Realtec Vision Buddmeyer – uso no Ubuntu
 
-Baseline **v1607**. Índice: [OVERVIEW.md](OVERVIEW.md) · Modelo: [MODELO_MASK2FORMER.md](MODELO_MASK2FORMER.md) · Clone: [CLONE_BOX_PC.md](CLONE_BOX_PC.md).
+Baseline **v2108**. Índice: [OVERVIEW.md](OVERVIEW.md) · Clone: [CLONE_BOX_PC.md](CLONE_BOX_PC.md) · 24×7: [RUNBOOK_24x7_UBUNTU.md](RUNBOOK_24x7_UBUNTU.md).
 
 ## Compatibilidade
 
@@ -43,33 +43,38 @@ sudo apt install -y \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
-    libxrender1
+    libxrender1 \
+    x11-xserver-utils
 ```
+
+Para **autostart industrial**, instale também `systemd` (incluído no Ubuntu) e use [RUNBOOK_24x7_UBUNTU.md](RUNBOOK_24x7_UBUNTU.md).
 
 ## Instalação
 
-1. **Clone ou abra o projeto** e entre na pasta raiz do repositório.
+1. **Clone** — ver [CLONE_BOX_PC.md](CLONE_BOX_PC.md).
 
-2. **Crie e ative um ambiente virtual:**
+2. **Ambiente virtual** (dentro de `realtec_vision_buddmeyer/`):
    ```bash
-   python3 -m venv venv
-   source venv/bin/activate
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install -r requirements.txt
    ```
 
-3. **Instale as dependências Python:**
+3. **Config de campo:** copie o template e edite IP CLP / câmera:
    ```bash
-   pip install -r realtec_vision_buddmeyer/requirements.txt
+   cp config/config.production.yaml.example config/config.yaml
    ```
 
-   Para GPU NVIDIA (CUDA):
+4. **Preflight:**
    ```bash
-   pip install torch torchvision
+   python scripts/preflight_check.py
    ```
 
-4. **Configuração:** edite `realtec_vision_buddmeyer/config/config.yaml` se necessário:
-   - `streaming.source_type`: use `video`, `usb` ou `rtsp`.
-   - `streaming.video_path`: caminho relativo ou absoluto.
-   - `detection.device`: `auto` (usa CUDA se disponível), `cuda` ou `cpu`.
+5. **systemd (recomendado em fábrica):**
+   ```bash
+   sudo deploy/install_systemd.sh /caminho/para/clone
+   sudo systemctl start realtec-vision
+   ```
 
 ## Execução
 
@@ -127,3 +132,6 @@ Use `detection.device: cpu` em `config.yaml`; a inferência será mais lenta, ma
 
 ### Modelo não carrega
 Confirme Git LFS (`git lfs pull`) e o tamanho de `model_best/model.safetensors` (~181 MB).
+
+### Screensaver / sleep durante operação
+Com `reliability.inhibit_power_management: true`, o runtime usa `systemd-inhibit`. Desactive também suspensão automática nas definições de energia do Ubuntu.

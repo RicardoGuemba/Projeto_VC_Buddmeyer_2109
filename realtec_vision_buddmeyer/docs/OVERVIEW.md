@@ -2,7 +2,7 @@
 
 Sistema de visão industrial pick-and-place: captura por **câmera USB/GenTL**, segmentação Mask2Former, handshake FSM com CLP Omron.
 
-**Repo / baseline:** `Projeto_VC_Buddmeyer_v1607` (`v1607-stable`) — ver [MIGRACAO_PROJETO_VC_BUDDMEYER_v1607.md](MIGRACAO_PROJETO_VC_BUDDMEYER_v1607.md).  
+**Repo / baseline:** `Projeto_VC_Buddmeyer_v2108` — ver [CLONE_BOX_PC.md](CLONE_BOX_PC.md) e [RUNBOOK_24x7_UBUNTU.md](RUNBOOK_24x7_UBUNTU.md).  
 **App:** v2.0.0 · **Modelo:** [MODELO_MASK2FORMER.md](MODELO_MASK2FORMER.md)
 
 ## Fluxo operacional

@@ -142,3 +142,83 @@ class TestShutdownStability:
         page._run_model_load_on_main_thread()
         assert not page._model_loading
 
+    def test_shutdown_while_running_skips_async_plc_and_stream_restart(self, qtbot):
+        """Saída com sistema activo não agenda disconnect CIP nem recovery de stream."""
+        from unittest.mock import patch
+
+        from ui.pages.operation_page import OperationPage
+
+        page = OperationPage()
+        qtbot.addWidget(page)
+        page._is_running = True
+        page._stream_manager._is_running = True
+        page._inference_engine._is_running = False
+
+        with patch.object(page._stream_manager, "stop") as stop_stream, \
+             patch.object(page._inference_engine, "stop") as stop_inf, \
+             patch.object(page, "_run_shutdown_plc_sync") as plc_sync, \
+             patch.object(page._stream_manager, "start") as start_stream:
+            page.shutdown()
+            stop_stream.assert_called()
+            stop_inf.assert_called()
+            plc_sync.assert_not_called()
+            start_stream.assert_not_called()
+
+        assert page._shutdown_requested
+        assert page._stream_manager._shutting_down
+        assert page._cip_client._exiting
+        page._stream_manager.clear_shutdown_guard()
+        page._cip_client._exiting = False
+
+    def test_prepare_shutdown_blocks_stream_start_and_recovery(self):
+        from unittest.mock import patch
+
+        from streaming.stream_health import HealthStatus, StreamHealthInfo
+        from streaming.stream_manager import StreamManager
+
+        mgr = StreamManager()
+        mgr.clear_shutdown_guard()
+        mgr._is_running = True
+        mgr._settings.reliability.stream_auto_restart = True
+        mgr._settings.streaming.unhealthy_restart_after_s = 0.01
+        mgr.prepare_shutdown()
+
+        info = StreamHealthInfo(
+            status=HealthStatus.UNHEALTHY,
+            fps=0.0,
+            expected_fps=30.0,
+            frame_drops=99,
+            last_frame_time=None,
+            latency_ms=0.0,
+            buffer_usage=0.0,
+            message="unhealthy",
+        )
+        with patch.object(mgr, "stop") as stop_mock, patch.object(mgr, "start") as start_mock:
+            mgr._unhealthy_since = __import__("time").time() - 1.0
+            mgr._on_health_changed(info)
+            stop_mock.assert_not_called()
+            start_mock.assert_not_called()
+
+        assert mgr.start() is False
+        mgr.clear_shutdown_guard()
+        mgr._is_running = False
+
+    def test_power_guard_release_idempotent(self):
+        from core.power_guard import PowerGuard
+
+        guard = PowerGuard()
+        guard.release()
+        guard.release()
+        assert guard.is_active is False
+
+    def test_cip_shutdown_for_exit_blocks_reconnect(self):
+        from communication.cip_client import CIPClient
+
+        cip = CIPClient()
+        cip.shutdown_for_exit()
+        assert cip._exiting is True
+        cip._reconnect_timer = None
+        cip._schedule_reconnect()
+        assert cip._reconnect_timer is None
+        cip._exiting = False
+

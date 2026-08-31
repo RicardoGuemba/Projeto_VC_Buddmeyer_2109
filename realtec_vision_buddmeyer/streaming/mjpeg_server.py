@@ -5,11 +5,12 @@ URL simples para copiar e colar na barra de endereços (ex.: http://127.0.0.1:80
 Compatível com Windows, macOS e Linux.
 """
 
+import json
 import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Optional
+from typing import Callable, Optional
 
 import cv2
 import numpy as np
@@ -155,6 +156,23 @@ class MjpegHandler(BaseHTTPRequestHandler):
                 self.wfile.write(html)
             return
 
+        if path == "/health":
+            payload = b"{}"
+            if mjpeg.health_provider is not None:
+                try:
+                    payload = json.dumps(mjpeg.health_provider(), sort_keys=True).encode("utf-8")
+                except Exception as e:
+                    payload = json.dumps({"error": str(e)}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            if body:
+                self.wfile.write(payload)
+            return
+
         if path != stream_path:
             self.send_error(404, f"Not Found: {self.path}")
             return
@@ -233,6 +251,19 @@ class MjpegServer:
         self._frame_seq: int = 0
         self._lock = threading.Lock()
         self._running = False
+        self._health_provider: Optional[Callable[[], dict]] = None
+        self._started_at = time.monotonic()
+
+    @property
+    def health_provider(self) -> Optional[Callable[[], dict]]:
+        return self._health_provider
+
+    def set_health_provider(self, provider: Optional[Callable[[], dict]]) -> None:
+        self._health_provider = provider
+
+    @property
+    def uptime_s(self) -> float:
+        return time.monotonic() - self._started_at
 
     @property
     def path(self) -> str:
@@ -281,6 +312,7 @@ class MjpegServer:
             self._thread = threading.Thread(target=self._serve, daemon=True)
             self._thread.start()
             self._running = True
+            self._started_at = time.monotonic()
             url = f"http://{get_local_ip()}:{self._port}{self._path}"
             logger.info("mjpeg_server_started", url=url, port=self._port)
             return True

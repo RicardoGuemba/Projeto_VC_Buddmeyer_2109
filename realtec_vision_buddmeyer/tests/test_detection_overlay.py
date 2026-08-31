@@ -44,6 +44,14 @@ class TestDetectionOverlay:
         assert "A:10000.0cm²" in text
         assert "∠45°" in text
 
+        ascii_text = format_centroid_metrics_summary(
+            100.0, 50.0, 10000.0, 45.0, mm_per_px=10.0, ascii_safe=True,
+        )
+        assert "A:10000.0cm2" in ascii_text
+        assert "ang:45deg" in ascii_text
+        assert "?" not in ascii_text
+        assert ascii_text.isascii()
+
         pick = format_centroid_metrics_summary(
             10.0, 20.0, 500.0, None, mm_per_px=1.0, is_pick=True,
         )

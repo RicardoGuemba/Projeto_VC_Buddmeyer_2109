@@ -56,3 +56,26 @@ detection:
   confidence_threshold: 2.0
 """, encoding="utf-8")
     return config_path
+
+
+@pytest.fixture(autouse=True)
+def _reset_runtime_guards():
+    """Evita que shutdown de um teste envenene singletons nos seguintes."""
+    yield
+    try:
+        from streaming.stream_manager import StreamManager
+
+        mgr = StreamManager._instance
+        if mgr is not None:
+            mgr._shutting_down = False
+            mgr._stop_health_timer()
+    except Exception:
+        pass
+    try:
+        from communication.cip_client import CIPClient
+
+        cip = CIPClient._instance
+        if cip is not None:
+            cip._exiting = False
+    except Exception:
+        pass

@@ -551,12 +551,15 @@ Código / desenho (v1607):
 
 Aceitação de campo / deploy (ainda abertos):
 
+- [x] systemd unit + preflight (`deploy/`) — ver [RUNBOOK_24x7_UBUNTU.md](RUNBOOK_24x7_UBUNTU.md)
+- [x] Auto-start Operação + recovery PLC (`FEATURE_RESILIENCE_UBUNTU.md`)
+- [x] GET /health no servidor MJPEG
 - [ ] 72 h soak sem crescimento de memória > 5%
 - [ ] Desconexão CLP > 1 h recupera automaticamente (`max_retries: 0` em produção)
 - [ ] Desconexão câmera USB/GenTL recupera em < 60 s (validado em campo)
 - [ ] Perfil de calibração exportável e RMS < tolerância (affine+)
 - [ ] Disco estável por 30 dias sob carga real
-- [ ] systemd / supervisor + (opcional) modo headless
+- [ ] Modo headless (opcional; Qt GUI + systemd implementados)
 
 ---
 

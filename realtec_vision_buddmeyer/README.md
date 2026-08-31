@@ -21,15 +21,21 @@ Sistema de visão computacional industrial para automação de expedição (pick
 
 ## Instalação rápida
 
+Repositório **privado** da baseline **v2108** (código + pesos Mask2Former via Git LFS).
+Guia completo para portátil e box PC do POC: [docs/CLONE_BOX_PC.md](docs/CLONE_BOX_PC.md).
+
 ```bash
-git clone https://github.com/RicardoGuemba/Realtec_Vision_Buddmeyer.git
-cd Realtec_Vision_Buddmeyer
-git lfs install && git lfs pull
+git lfs install
+git clone https://github.com/RicardoGuemba/Realtec_Vision_Buddmeyer_v2108.git
+cd Realtec_Vision_Buddmeyer_v2108
+git lfs pull
 
 python3 -m venv venv
 source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r realtec_vision_buddmeyer/requirements.txt
 ```
+
+Confirme que `realtec_vision_buddmeyer/model_best/model.safetensors` tem ~**181 MB** (não ~130 bytes).
 
 ## Execução
 

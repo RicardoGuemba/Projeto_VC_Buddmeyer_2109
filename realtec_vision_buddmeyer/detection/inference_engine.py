@@ -538,15 +538,15 @@ class InferenceWorker(QThread):
         self._pause_condition.wakeAll()
         self._mutex.unlock()
     
-    def stop(self) -> None:
-        """Para a inferência."""
+    def stop(self, timeout_ms: int = 5000) -> None:
+        """Para a inferência sem bloquear indefinidamente a GUI."""
         self._running = False
         self._mutex.lock()
         self._paused = False
         self._pause_condition.wakeAll()
         self._frame_condition.wakeAll()
         self._mutex.unlock()
-        self.wait()
+        self.wait(max(1, int(timeout_ms)))
 
 
 class InferenceEngine(QObject):
@@ -770,15 +770,15 @@ class InferenceEngine(QObject):
             logger.error("inference_start_failed", error=str(e))
             return False
     
-    def stop(self) -> None:
+    def stop(self, timeout_ms: int = 5000) -> None:
         """Para a inferência."""
         if not self._is_running:
             return
         
         if self._worker is not None:
-            self._worker.stop()
+            self._worker.stop(timeout_ms=timeout_ms)
             if self._worker.isRunning():
-                self._worker.wait(5000)
+                self._worker.wait(min(timeout_ms, 500))
             self._worker.deleteLater()
             self._worker = None
         

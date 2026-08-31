@@ -22,6 +22,7 @@ from config import get_settings
 from coordinate.transform import get_coordinate_transform
 from core.logger import get_logger
 from core.metrics import MetricsCollector
+from core.power_guard import get_power_guard
 from streaming import StreamManager
 from streaming.mjpeg_server import MjpegServer, normalize_http_path
 from detection import InferenceEngine
@@ -494,6 +495,8 @@ class OperationPage(QWidget):
         if source_type == "usb":
             self._settings.streaming.usb_camera_index = self._usb_index_spin.value()
         
+        self._stream_manager.clear_shutdown_guard()
+        
         # Validação prévia para GenTL (arquivo CTI)
         if source_type == "gentl":
             cti_path_str = (self._settings.streaming.gentl_cti_path or "").strip()
@@ -570,6 +573,10 @@ class OperationPage(QWidget):
 
         self.apply_output_stream_settings(from_system_start=True)
 
+        if getattr(self._settings.reliability, "inhibit_power_management", True):
+            if get_power_guard().acquire():
+                self._event_console.add_info("Protecção sleep/screensaver activa")
+
         self._update_ui_state()
         self._event_console.add_success(f"Sistema iniciado [{source_label}]")
         self._status_panel.set_system_status("RUNNING")
@@ -613,6 +620,7 @@ class OperationPage(QWidget):
             port=port,
             path=path,
         )
+        self._mjpeg_server.set_health_provider(self._build_health_payload)
         if self._mjpeg_server.start():
             deadline = time.monotonic() + 0.5
             while time.monotonic() < deadline:
@@ -699,6 +707,28 @@ class OperationPage(QWidget):
         self._model_loading = False
         self._on_model_load_finished(success)
 
+    def _build_health_payload(self) -> dict:
+        """Payload JSON para GET /health."""
+        stream_status = self._stream_manager.get_status()
+        cip_status = self._cip_client.get_status()
+        return {
+            "process": "running" if self._is_running else "stopped",
+            "stream": stream_status.get("health", {}).get("status", "unknown"),
+            "cip": cip_status.get("status", "unknown"),
+            "fsm_state": self._robot_controller.state.value,
+            "uptime_s": round(self._mjpeg_server.uptime_s, 1) if self._mjpeg_server else 0.0,
+        }
+
+    def auto_start_if_configured(self) -> None:
+        """Inicia Operação automaticamente quando auto_start_operation está activo."""
+        if not getattr(self._settings.reliability, "auto_start_operation", False):
+            return
+        if self._is_running:
+            return
+        self._logger.info("auto_start_operation_triggered")
+        self._event_console.add_info("Auto-start: iniciando Operação...")
+        self._start_system()
+
     def start_model_preload(self) -> None:
         """Pré-carrega o modelo após abrir o app (na GUI thread)."""
         if self._inference_engine.is_model_loaded or self._model_loading:
@@ -712,10 +742,15 @@ class OperationPage(QWidget):
         self._pending_start_source_label = None
         if hasattr(self, "_fps_timer"):
             self._fps_timer.stop()
+        self._stream_manager.prepare_shutdown()
+        self._cip_client._exiting = True
+        if self._mjpeg_server is not None:
+            self._mjpeg_server.set_health_provider(None)
         if self._is_running:
-            self._stop_system()
+            self._stop_system(for_exit=True)
         else:
             self._robot_controller.stop()
+        get_power_guard().release()
         self._stop_mjpeg_server()
         self._cip_client.shutdown_for_exit()
 
@@ -748,7 +783,12 @@ class OperationPage(QWidget):
             except Exception as e:
                 self._logger.warning("failed_to_set_vision_ready", error=str(e))
 
-            self._robot_controller.start()
+            initial_state = await self._robot_controller.prepare_plc_recovery_state()
+            self._robot_controller.start(initial_state=initial_state)
+            if initial_state is not None:
+                self._event_console.add_info(
+                    f"Recovery CLP: FSM sincronizada → {initial_state.value}"
+                )
             mode_label = "continuo" if self._continuous_cb.isChecked() else "manual"
             self._event_console.add_info(
                 f"Controlador de robo iniciado (modo {mode_label})"
@@ -768,7 +808,8 @@ class OperationPage(QWidget):
             self._logger.error("plc_connect_exception", error=str(e))
             if not self._cip_client.is_connected:
                 await self._cip_client._connect_simulated()
-            self._robot_controller.start()
+            initial_state = await self._robot_controller.prepare_plc_recovery_state()
+            self._robot_controller.start(initial_state=initial_state)
 
     async def _connect_plc(self) -> None:
         """Conecta ao CLP."""
@@ -790,7 +831,7 @@ class OperationPage(QWidget):
             await self._cip_client.disconnect()
     
     @Slot()
-    def _stop_system(self) -> None:
+    def _stop_system(self, for_exit: bool = False) -> None:
         """Para o sistema de forma ordenada e estável."""
         if not self._is_running:
             return
@@ -803,17 +844,20 @@ class OperationPage(QWidget):
         self._event_console.add_info("Parando sistema...")
 
         # Mantém stream HTTP se foi activado (Copiar URL) — browser continua a funcionar
-        if not self._settings.output.rtsp_enabled:
+        if not for_exit and not self._settings.output.rtsp_enabled:
             self._stop_mjpeg_server()
 
+        worker_timeout = 400 if for_exit else 5000
         self._robot_controller.stop()
-        self._inference_engine.stop()
-        self._stream_manager.stop()
+        self._inference_engine.stop(timeout_ms=worker_timeout)
+        self._stream_manager.stop(timeout_ms=worker_timeout)
+        get_power_guard().release()
 
-        try:
-            self._run_shutdown_plc_sync()
-        except Exception as e:
-            self._logger.warning("shutdown_plc_error", error=str(e))
+        if not for_exit:
+            try:
+                self._run_shutdown_plc_sync()
+            except Exception as e:
+                self._logger.warning("shutdown_plc_error", error=str(e))
 
         self._update_ui_state()
         self._pause_btn.setText("⏸ Pausar")
