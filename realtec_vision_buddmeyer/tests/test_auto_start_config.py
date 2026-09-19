@@ -18,6 +18,7 @@ class TestAutoStartConfig:
         assert r.plc_sync_on_startup is True
         assert r.inhibit_power_management is True
         assert r.kiosk_fullscreen is False
+        assert r.require_field_safety_tags is False
 
     def test_settings_loads_config_version(self):
         yaml = ROOT / "config" / "config.yaml"
@@ -31,4 +32,5 @@ class TestAutoStartConfig:
         s = Settings.from_yaml(example)
         assert s.reliability.production_mode is True
         assert s.reliability.auto_start_operation is True
+        assert s.reliability.require_field_safety_tags is True
         assert s.cip.max_retries == 0

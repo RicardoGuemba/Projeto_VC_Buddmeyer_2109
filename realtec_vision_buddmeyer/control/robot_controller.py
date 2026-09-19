@@ -21,7 +21,11 @@ from detection.events import DetectionEvent
 from detection.pick_selection import area_for_plc
 from coordinate.transform import get_coordinate_transform
 from core.audit_store import get_audit_store
-from control.plc_recovery import read_plc_snapshot, resolve_safe_state
+from control.plc_recovery import (
+    read_plc_snapshot,
+    resolve_safe_state,
+    safety_block_reason,
+)
 
 logger = get_logger("control.robot")
 
@@ -80,7 +84,8 @@ VALID_TRANSITIONS = {
         RobotControlState.STOPPED,
     },
     RobotControlState.WAITING_ACK: {
-        RobotControlState.ACK_CONFIRMED,
+        RobotControlState.WAITING_PICK,  # FSM mínima: EchoAck no mesmo handler
+        RobotControlState.ACK_CONFIRMED,  # legado
         RobotControlState.TIMEOUT,
         RobotControlState.ERROR,
         RobotControlState.STOPPED,
@@ -189,6 +194,8 @@ class RobotController(QObject):
         self._previous_state = RobotControlState.STOPPED
         self._state_enter_time = datetime.now()
         self._last_error: Optional[str] = None
+        self._last_safety_block_reason: str = ""
+        self._last_emitted_safety_reason: str = ""
         
         # Ciclo
         self._cycle_count = 0
@@ -199,6 +206,9 @@ class RobotController(QObject):
         self._pick_timeout = self._settings.robot_control.pick_timeout
         self._place_timeout = self._settings.robot_control.place_timeout
         self._authorization_timeout = self._settings.robot_control.authorization_timeout
+        self._cycle_complete_timeout = getattr(
+            self._settings.robot_control, "cycle_complete_timeout", 3.0
+        )
         self._bypass_authorization = self._settings.robot_control.bypass_authorization
         
         # Timer para polling
@@ -288,6 +298,9 @@ class RobotController(QObject):
         self._pick_timeout = self._settings.robot_control.pick_timeout
         self._place_timeout = self._settings.robot_control.place_timeout
         self._authorization_timeout = self._settings.robot_control.authorization_timeout
+        self._cycle_complete_timeout = getattr(
+            self._settings.robot_control, "cycle_complete_timeout", 3.0
+        )
         self._bypass_authorization = self._settings.robot_control.bypass_authorization
         
         self._is_running = True
@@ -320,9 +333,32 @@ class RobotController(QObject):
             return None
 
         production = getattr(reliability, "production_mode", False)
+        require_field = bool(
+            getattr(reliability, "require_field_safety_tags", False)
+        )
         snapshot = await read_plc_snapshot(self._cip_client)
-        resolved_name = resolve_safe_state(snapshot, production_mode=production)
+        resolved_name = resolve_safe_state(
+            snapshot,
+            production_mode=production,
+            require_field_safety_tags=require_field,
+        )
         resolved = RobotControlState(resolved_name)
+        if snapshot.robot_ack:
+            logger.warning(
+                "plc_recovery_residual_ack",
+                hint="Reset ROBOT_ACK no CLP; PC nao escreve esta tag",
+            )
+            self._last_error = "Handshake residual: ROBOT_ACK=True. Reset no CLP."
+        blocked = safety_block_reason(
+            plc_emergency_stop=snapshot.plc_emergency_stop,
+            safety_emergency_stop=snapshot.safety_emergency_stop,
+            safety_gate_closed=snapshot.safety_gate_closed,
+            safety_area_clear=snapshot.safety_area_clear,
+            safety_light_curtain_ok=snapshot.safety_light_curtain_ok,
+            require_field_safety_tags=require_field,
+        )
+        if blocked:
+            self._last_safety_block_reason = blocked
 
         await self._clear_vision_handshake_tags()
         try:
@@ -504,8 +540,9 @@ class RobotController(QObject):
                 self._transition_to(RobotControlState.INITIALIZING)
                 return
             
-            # Verifica segurança primeiro
+            # Verifica segurança primeiro (antes de PlcAuthorizeDetection)
             if not await self._check_safety():
+                self._emit_safety_blocked()
                 self._transition_to(RobotControlState.SAFETY_BLOCKED)
                 return
             
@@ -637,7 +674,13 @@ class RobotController(QObject):
             if ack:
                 logger.info("robot_ack_received")
                 self._record_step("ACK do robo recebido")
-                self._transition_to(RobotControlState.ACK_CONFIRMED)
+                try:
+                    await self._cip_client.set_vision_echo_ack(True)
+                except Exception as echo_err:
+                    logger.error("echo_ack_failed", error=str(echo_err))
+                    self._handle_exception(str(echo_err))
+                    return
+                self._transition_to(RobotControlState.WAITING_PICK)
                 
         except Exception as e:
             logger.warning("ack_read_error", error=str(e))
@@ -694,53 +737,70 @@ class RobotController(QObject):
             logger.warning("place_check_error", error=str(e))
     
     async def _handle_waiting_cycle_start(self) -> None:
-        """Aguarda CLP sinalizar fim de ciclo, faz cleanup e emite summary."""
+        """Reset: CycleComplete OU CycleStart; fallback se Place feito e not Busy."""
         try:
+            cycle_complete = await self._cip_client.read_tag("PlcCycleComplete")
             cycle_start = await self._cip_client.read_tag("PlcCycleStart")
-            
-            if cycle_start:
-                logger.info("cycle_start_received")
-                self._record_step("Ciclo pick-and-place COMPLETO")
-                
-                self._cycle_count += 1
-                self.cycle_completed.emit(self._cycle_count)
-                self._metrics.increment("cycle_count")
+            place_done = await self._cip_client.read_tag("RobotPlaceComplete")
+            busy = await self._cip_client.read_tag("RobotBusy")
+            elapsed = (datetime.now() - self._state_enter_time).total_seconds()
+            timeout = getattr(self, "_cycle_complete_timeout", 3.0)
 
-                cx_mm = cy_mm = None
-                if self._current_detection and self._current_detection.detected:
-                    cx_px, cy_px = self._current_detection.centroid
-                    pose = get_coordinate_transform().vision_to_robot(cx_px, cy_px)
-                    cx_mm, cy_mm = pose.x_mm, pose.y_mm
-                try:
-                    get_audit_store().record_cycle(
-                        cycle_number=self._cycle_count,
-                        state=RobotControlState.WAITING_CYCLE_START.value,
-                        outcome="complete",
-                        centroid_x_mm=cx_mm,
-                        centroid_y_mm=cy_mm,
+            handshake_done = bool(cycle_complete) or bool(cycle_start)
+            fallback = (
+                elapsed > timeout
+                and bool(place_done)
+                and not bool(busy)
+            )
+            if handshake_done or fallback:
+                if fallback and not handshake_done:
+                    logger.info(
+                        "cycle_reset_fallback_place_complete",
+                        elapsed=round(elapsed, 2),
                     )
-                except Exception as audit_err:
-                    logger.warning("audit_cycle_failed", error=str(audit_err))
-                
-                # Emite resumo do ciclo para a UI
-                self.cycle_summary.emit(self._cycle_steps.copy())
-                self._cycle_steps.clear()
-                
-                # Reseta flags no CLP
-                try:
-                    await self._cip_client.set_vision_echo_ack(False)
-                    await self._cip_client.set_ready_for_next(True)
-                except Exception as e:
-                    logger.warning("cycle_cleanup_flags_error", error=str(e))
-                
-                # Limpa detecção atual
-                self._current_detection = None
-                self._ready_cleanup_done = False
-                
-                self._transition_to(RobotControlState.READY_FOR_NEXT)
-                
+                await self._finish_cycle_reset()
         except Exception as e:
             logger.warning("cycle_start_check_error", error=str(e))
+
+    async def _finish_cycle_reset(self) -> None:
+        """Fecha o ciclo (Reset) e vai a READY_FOR_NEXT → Idle em contínuo."""
+        logger.info("cycle_reset")
+        self._record_step("Ciclo pick-and-place COMPLETO")
+
+        self._cycle_count += 1
+        self.cycle_completed.emit(self._cycle_count)
+        self._metrics.increment("cycle_count")
+
+        cx_mm = cy_mm = None
+        if self._current_detection and self._current_detection.detected:
+            cx_px, cy_px = self._current_detection.centroid
+            pose = get_coordinate_transform().vision_to_robot(cx_px, cy_px)
+            cx_mm, cy_mm = pose.x_mm, pose.y_mm
+        try:
+            get_audit_store().record_cycle(
+                cycle_number=self._cycle_count,
+                state=RobotControlState.WAITING_CYCLE_START.value,
+                outcome="complete",
+                centroid_x_mm=cx_mm,
+                centroid_y_mm=cy_mm,
+            )
+        except Exception as audit_err:
+            logger.warning("audit_cycle_failed", error=str(audit_err))
+
+        self.cycle_summary.emit(self._cycle_steps.copy())
+        self._cycle_steps.clear()
+
+        try:
+            await self._cip_client.set_vision_echo_ack(False)
+            await self._cip_client.write_tag("VisionDataSent", False)
+            await self._cip_client.write_tag("ProductDetected", False)
+            await self._cip_client.set_ready_for_next(True)
+        except Exception as e:
+            logger.warning("cycle_cleanup_flags_error", error=str(e))
+
+        self._current_detection = None
+        self._ready_cleanup_done = False
+        self._transition_to(RobotControlState.READY_FOR_NEXT)
     
     async def _handle_ready_for_next(self) -> None:
         """
@@ -776,38 +836,75 @@ class RobotController(QObject):
         try:
             if await self._check_safety():
                 logger.info("safety_cleared")
+                self._last_safety_block_reason = ""
+                self._last_emitted_safety_reason = ""
                 self._transition_to(RobotControlState.WAITING_AUTHORIZATION)
         except Exception as e:
             logger.warning("safety_check_error", error=str(e))
-    
+
+    def _require_field_safety_tags(self) -> bool:
+        reliability = getattr(self._settings, "reliability", None)
+        return bool(getattr(reliability, "require_field_safety_tags", False))
+
+    def _emit_safety_blocked(self) -> None:
+        reason = self._last_safety_block_reason or "tag de seguranca"
+        if self._last_emitted_safety_reason == reason:
+            return
+        self._last_emitted_safety_reason = reason
+        logger.warning("safety_blocked", reason=reason)
+        trace_event(
+            "ROBOT.SAFETY_BLOCKED",
+            feature="robot",
+            use_case="handshake",
+            reason=reason,
+        )
+        self.cycle_step.emit(f"SAFETY_BLOCKED: {reason}")
+
     async def _check_safety(self) -> bool:
-        """Verifica condições de segurança."""
+        """Verifica condições de segurança (mesma regra que recovery)."""
         production = getattr(
             getattr(self._settings, "reliability", None), "production_mode", False
         )
+        require_field = self._require_field_safety_tags()
         try:
             emergency = await self._cip_client.read_tag("PlcEmergencyStop")
-            if emergency:
-                logger.warning("emergency_stop_active")
+            safety_estop = None
+            gate = None
+            area_clear = None
+            curtain = None
+            if require_field:
+                safety_estop = await self._cip_client.read_tag("SafetyEmergencyStop")
+                gate = await self._cip_client.read_tag("SafetyGateClosed")
+                area_clear = await self._cip_client.read_tag("SafetyAreaClear")
+                curtain = await self._cip_client.read_tag("SafetyLightCurtainOK")
+
+            reason = safety_block_reason(
+                plc_emergency_stop=bool(emergency),
+                safety_emergency_stop=(
+                    bool(safety_estop) if safety_estop is not None else None
+                ),
+                safety_gate_closed=bool(gate) if gate is not None else None,
+                safety_area_clear=bool(area_clear) if area_clear is not None else None,
+                safety_light_curtain_ok=bool(curtain) if curtain is not None else None,
+                require_field_safety_tags=require_field,
+            )
+            if reason:
+                self._last_safety_block_reason = reason
+                if "PlcEmergencyStop" in reason:
+                    logger.warning("emergency_stop_active")
+                elif "SafetyGateClosed" in reason:
+                    logger.warning("safety_gate_not_closed")
+                elif "SafetyAreaClear" in reason:
+                    logger.warning("safety_area_not_clear")
+                elif "SafetyLightCurtainOK" in reason:
+                    logger.warning("safety_light_curtain_not_ok")
                 return False
 
-            gate = await self._cip_client.read_tag("SafetyGateClosed")
-            area_clear = await self._cip_client.read_tag("SafetyAreaClear")
-            curtain = await self._cip_client.read_tag("SafetyLightCurtainOK")
-
-            if not gate:
-                logger.warning("safety_gate_not_closed")
-                return False
-            if not area_clear:
-                logger.warning("safety_area_not_clear")
-                return False
-            if not curtain:
-                logger.warning("safety_light_curtain_not_ok")
-                return False
-
+            self._last_safety_block_reason = ""
             return True
         except Exception as e:
             logger.warning("safety_check_error", error=str(e))
+            self._last_safety_block_reason = f"leitura CIP falhou: {e}"
             return not production
 
     async def _check_robot_error(self) -> bool:
@@ -935,10 +1032,15 @@ class RobotController(QObject):
             "is_running": self._is_running,
             "cycle_count": self._cycle_count,
             "last_error": self._last_error,
+            "last_safety_block_reason": self._last_safety_block_reason,
             "state_duration": (datetime.now() - self._state_enter_time).total_seconds(),
             "current_detection": self._current_detection.to_dict() if self._current_detection else None,
         }
     
+    @property
+    def last_safety_block_reason(self) -> str:
+        return self._last_safety_block_reason
+
     @property
     def state(self) -> RobotControlState:
         """Retorna estado atual."""

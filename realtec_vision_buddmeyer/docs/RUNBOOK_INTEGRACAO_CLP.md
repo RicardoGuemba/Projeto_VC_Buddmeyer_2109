@@ -58,7 +58,7 @@ reliability:
 
 | Sintoma | Causa provável | Acção |
 |---------|----------------|-------|
-| FSM preso em WAITING_AUTHORIZATION | `PlcAuthorizeDetection` false | CLP em auto + autorização |
+| FSM preso em WAITING_AUTHORIZATION / “Seguranca ativa” | `PlcAuthorizeDetection` false **ou** safety: `PlcEmergencyStop` / `Safety_*` (se `require_field_safety_tags`) | CLP em auto + autorização; no POC default não exige portão/cortina. Console mostra a tag. |
 | TIMEOUT em production | ACK/pick lento | Ajustar timeouts ou timing CLP |
 | Coordenadas erradas | mm/px não calibrado | Recalibrar ROI |
 | VisionBusy sempre true | FSM em estado activo ou erro | Reset FSM; verificar `ROBOT_ERROR` |

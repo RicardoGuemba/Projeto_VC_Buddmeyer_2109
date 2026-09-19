@@ -789,6 +789,14 @@ class OperationPage(QWidget):
                 self._event_console.add_info(
                     f"Recovery CLP: FSM sincronizada → {initial_state.value}"
                 )
+                residual = getattr(self._robot_controller, "_last_error", "") or ""
+                if initial_state.value == "ERROR" and "ROBOT_ACK" in residual:
+                    self._event_console.add_warning(residual)
+                reason = getattr(
+                    self._robot_controller, "last_safety_block_reason", ""
+                ) or ""
+                if initial_state.value == "SAFETY_BLOCKED" and reason:
+                    self._event_console.add_warning(f"SAFETY_BLOCKED: {reason}")
             mode_label = "continuo" if self._continuous_cb.isChecked() else "manual"
             self._event_console.add_info(
                 f"Controlador de robo iniciado (modo {mode_label})"
@@ -1174,6 +1182,14 @@ class OperationPage(QWidget):
             RobotControlState.SAFETY_BLOCKED.value: "Seguranca ativa. Aguardando liberacao.",
             RobotControlState.STOPPED.value: "Parado.",
         }
+        if state_value == RobotControlState.SAFETY_BLOCKED.value:
+            reason = getattr(self._robot_controller, "last_safety_block_reason", "") or ""
+            if reason:
+                return f"Seguranca ativa: {reason}"
+        if state_value == RobotControlState.ERROR.value:
+            err = getattr(self._robot_controller, "_last_error", None) or ""
+            if err:
+                return err
         return messages.get(state_value, state_value)
     
     @Slot(str)
@@ -1221,7 +1237,10 @@ class OperationPage(QWidget):
         """Handler para etapa do ciclo — exibe no console e na barra de status."""
         if not self._is_running:
             return
-        self._event_console.add_info(f"[Ciclo] {step}", "Robo")
+        if step.startswith("SAFETY_BLOCKED"):
+            self._event_console.add_warning(step, "Robo")
+        else:
+            self._event_console.add_info(f"[Ciclo] {step}", "Robo")
         self._status_step_label.setText(step)
     
     @Slot(list)

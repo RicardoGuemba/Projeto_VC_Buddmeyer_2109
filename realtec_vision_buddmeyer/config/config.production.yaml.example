@@ -36,6 +36,7 @@ reliability:
   kiosk_fullscreen: true
   stream_auto_restart: true
   inference_auto_restart: true
+  require_field_safety_tags: true
 output:
   rtsp_enabled: true
   http_port: 8080

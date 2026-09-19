@@ -22,6 +22,16 @@ from .connection_state import ConnectionState, ConnectionStatus
 from .cip_logger import CIPLogger
 from .exceptions import CIPConnectionError, CIPTimeoutError, CIPTagError
 
+# BOOL de handshake: RecursionError aphyt NÃO pode devolver False (mascara ACK/e-stop).
+_FAIL_CLOSED_ON_RECURSION = frozenset(
+    {
+        "RobotAck",
+        "PlcEmergencyStop",
+        "PlcAuthorizeDetection",
+        "RobotError",
+    }
+)
+
 logger = get_logger("cip.client")
 
 
@@ -143,7 +153,8 @@ class SimulatedPLC:
         """CLP sinaliza que o ciclo esta completo."""
         with self._lock:
             self._tags["RobotCtrl_CycleStart"] = True
-        logger.debug("sim_robot: CycleStart = True (ciclo completo)")
+            self._tags["RobotCtrl_CycleComplete"] = True
+        logger.debug("sim_robot: CycleStart/CycleComplete = True")
     
     def _reset_robot_flags(self) -> None:
         """Reseta todas as flags do robo para novo ciclo."""
@@ -153,6 +164,7 @@ class SimulatedPLC:
             self._tags["RobotStatus_PickComplete"] = False
             self._tags["RobotStatus_PlaceComplete"] = False
             self._tags["RobotCtrl_CycleStart"] = False
+            self._tags["RobotCtrl_CycleComplete"] = False
             self._tags["PRODUCT_DETECTED"] = False
             self._tags["VisionCtrl_EchoAck"] = False
             self._tags["VisionCtrl_DataSent"] = False
@@ -452,12 +464,15 @@ class CIPClient(QObject):
                     error=str(e)[:50]
                 )
                 
-                # Define valor padrão seguro baseado no tipo esperado do TAG
                 definition = self._tag_map.get_definition(logical_name)
+                if logical_name in _FAIL_CLOSED_ON_RECURSION:
+                    raise CIPTagError(
+                        f"RecursionError ao ler TAG {logical_name}: "
+                        "handshake fail-closed (aphyt)"
+                    )
                 if definition:
-                    # Retorna valor padrão do tipo
                     if definition.tag_type == TagType.BOOL:
-                        safe_value = False  # Padrão seguro para booleano
+                        safe_value = False
                     elif definition.tag_type == TagType.INT:
                         safe_value = 0
                     elif definition.tag_type == TagType.REAL:

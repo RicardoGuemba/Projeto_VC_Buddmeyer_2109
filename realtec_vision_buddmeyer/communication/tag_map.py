@@ -295,7 +295,7 @@ class TagMap:
             plc_name="Safety_EmergencyStop",
             tag_type=TagType.BOOL,
             direction=TagDirection.READ,
-            description="Emergência não ativa",
+            description="Emergência não ativa (True = OK)",
         ),
     }
     

@@ -40,6 +40,9 @@ class TestSafetyGate:
         from communication.cip_client import CIPClient
         from control.robot_controller import RobotController
 
+        RobotController._reset_instance_for_tests()
+        CIPClient._reset_instance_for_tests()
+
         async def _run():
             cip = CIPClient()
             await cip._connect_simulated()
@@ -47,5 +50,68 @@ class TestSafetyGate:
 
             rc = RobotController()
             assert await rc._check_safety() is False
+            assert "PlcEmergencyStop" in rc.last_safety_block_reason
+
+        asyncio.run(_run())
+
+    def test_optional_field_tags_do_not_block_open_gate(self):
+        from communication.cip_client import CIPClient
+        from control.robot_controller import RobotController
+
+        RobotController._reset_instance_for_tests()
+        CIPClient._reset_instance_for_tests()
+
+        async def _run():
+            cip = CIPClient()
+            await cip._connect_simulated()
+            cip._simulated_plc._tags["Safety_GateClosed"] = False
+            cip._simulated_plc._tags["Safety_AreaClear"] = False
+            cip._simulated_plc._tags["Safety_LightCurtainOK"] = False
+
+            rc = RobotController()
+            rc._settings.reliability.require_field_safety_tags = False
+            assert await rc._check_safety() is True
+            assert rc.last_safety_block_reason == ""
+
+        asyncio.run(_run())
+
+    def test_required_field_tags_block_open_gate(self):
+        from communication.cip_client import CIPClient
+        from control.robot_controller import RobotController
+
+        RobotController._reset_instance_for_tests()
+        CIPClient._reset_instance_for_tests()
+
+        async def _run():
+            cip = CIPClient()
+            await cip._connect_simulated()
+            cip._simulated_plc._tags["Safety_GateClosed"] = False
+
+            rc = RobotController()
+            rc._settings.reliability.require_field_safety_tags = True
+            assert await rc._check_safety() is False
+            assert "SafetyGateClosed" in rc.last_safety_block_reason
+
+        asyncio.run(_run())
+
+    def test_robot_ack_recursion_is_fail_closed(self):
+        from communication.cip_client import CIPClient
+        from communication.exceptions import CIPTagError
+
+        CIPClient._reset_instance_for_tests()
+
+        async def _run():
+            cip = CIPClient()
+            await cip._connect_simulated()
+            original = cip._simulated_plc.read_variable
+
+            def boom(name):
+                if name == "ROBOT_ACK":
+                    raise RecursionError("aphyt")
+                return original(name)
+
+            cip._simulated_plc.read_variable = boom
+            with pytest.raises(CIPTagError, match="fail-closed"):
+                await cip.read_tag("RobotAck")
 
         asyncio.run(_run())

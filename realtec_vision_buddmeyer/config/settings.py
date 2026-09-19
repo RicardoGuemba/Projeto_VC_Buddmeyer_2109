@@ -225,6 +225,14 @@ class ReliabilitySettings(BaseModel):
     )
     stream_auto_restart: bool = Field(default=True, description="Reinicia captura após UNHEALTHY")
     inference_auto_restart: bool = Field(default=True, description="Reinicia worker após erros consecutivos")
+    require_field_safety_tags: bool = Field(
+        default=False,
+        description=(
+            "True: exige Safety_GateClosed, Safety_AreaClear, Safety_LightCurtainOK "
+            "e Safety_EmergencyStop (True = emergência não ativa). "
+            "False (POC): só PlcEmergencyStop bloqueia safety."
+        ),
+    )
 
 
 class LoggingSettings(BaseModel):
@@ -241,6 +249,11 @@ class RobotControlSettings(BaseModel):
     pick_timeout: float = Field(default=30.0, ge=5.0, description="Timeout para pick (s)")
     place_timeout: float = Field(default=30.0, ge=5.0, description="Timeout para place (s)")
     authorization_timeout: float = Field(default=30.0, ge=5.0, description="Timeout para autorização CLP (s)")
+    cycle_complete_timeout: float = Field(
+        default=3.0,
+        ge=0.5,
+        description="Timeout Reset: CycleComplete/CycleStart; se Place feito e not Busy, fecha o ciclo",
+    )
     bypass_authorization: bool = Field(default=False, description="Bypass autorização CLP (para testes)")
 
 

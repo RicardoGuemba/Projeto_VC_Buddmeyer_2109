@@ -84,7 +84,7 @@ O PRD sugere nomenclatura genérica (pc_*, plc_*). A implementação atual usa n
 | SafetyGateClosed | Safety_GateClosed | BOOL | Portão fechado |
 | SafetyAreaClear | Safety_AreaClear | BOOL | Área livre |
 | SafetyLightCurtainOK | Safety_LightCurtainOK | BOOL | Cortina de luz OK |
-| SafetyEmergencyStop | Safety_EmergencyStop | BOOL | Emergência não ativa |
+| SafetyEmergencyStop | Safety_EmergencyStop | BOOL | Emergência não ativa (**True = OK**; False = bloqueio só se `require_field_safety_tags`) |
 
 ---
 
@@ -105,4 +105,5 @@ Os nomes das tags no CLP podem ser alterados via arquivo `config/config.yaml` (s
 - **VisionBusy** (`VisionCtrl_VisionBusy`): escrito pela FSM durante estados activos (envio, ACK, pick, place). CLP pode ignorar novos triggers enquanto `TRUE`.
 - **VisionError** / **SystemFault**: activados em `ERROR`, `TIMEOUT` ou falha de comunicação; limpos ao reinicializar.
 - **Coordenadas:** `CENTROID_X` / `CENTROID_Y` em **mm** no referencial robô (modo `scale` via `preprocess.roi_calibration_mm_per_px`). Clamp ao ROI antes da conversão.
-- **Handshake:** único caminho — detecções só entram na FSM em estado `DETECTING`; sem escrita periódica paralela ao CLP.
+- **Handshake:** único caminho — detecções só entram na FSM em estado `DETECTING`; sem escrita periódica paralela ao CLP. Ciclo contínuo (fase sync): [FSM_MINIMA_NX102.md](FSM_MINIMA_NX102.md) — EchoAck no ACK; Reset aceita `PlcCycleComplete` **ou** `PlcCycleStart`.
+- **Safety:** `PlcEmergencyStop` (`RobotCtrl_EmergencyStop`) True = paragem (sempre). Tags `Safety_GateClosed` / `Safety_AreaClear` / `Safety_LightCurtainOK` só são exigidas se `reliability.require_field_safety_tags: true`. `SafetyEmergencyStop` True = emergência **não** ativa (polaridade invertida em relação a `PlcEmergencyStop`).

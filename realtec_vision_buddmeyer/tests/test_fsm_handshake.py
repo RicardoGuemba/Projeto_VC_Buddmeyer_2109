@@ -104,6 +104,61 @@ class TestFsmHandshake:
 
         asyncio.run(_run())
 
+    def test_cycle_complete_without_cycle_start_closes_loop(self, reset_singletons):
+        """NX102 pode pulsar CycleComplete e não CycleStart."""
+        from communication.cip_client import CIPClient
+        from control.robot_controller import RobotController, RobotControlState
+        from detection.events import DetectionEvent
+
+        async def _run():
+            cip = CIPClient()
+            cip._settings.cip.simulated = True
+            await cip.connect()
+            sim = cip._simulated_plc
+            _patch_fast_delays(sim)
+
+            orig_cycle = sim._simulate_cycle_complete
+
+            def complete_only():
+                with sim._lock:
+                    sim._tags["RobotCtrl_CycleStart"] = False
+                    sim._tags["RobotCtrl_CycleComplete"] = True
+
+            sim._simulate_cycle_complete = complete_only
+
+            rc = RobotController()
+            rc._settings.robot_control.bypass_authorization = True
+            rc._settings.robot_control.cycle_complete_timeout = 0.5
+            rc.set_cycle_mode("continuous")
+            rc.start()
+
+            for _ in range(30):
+                await rc._process_current_state()
+                await asyncio.sleep(0.02)
+                if rc.state == RobotControlState.DETECTING:
+                    break
+
+            event = DetectionEvent(
+                detected=True,
+                centroid=(50.0, 40.0),
+                confidence=0.9,
+                detection_count=1,
+                inference_time_ms=8.0,
+            )
+            rc.process_detection(event)
+
+            for _ in range(150):
+                await rc._process_current_state()
+                await asyncio.sleep(0.05)
+                if rc.cycle_count >= 1:
+                    break
+
+            rc.stop()
+            sim._simulate_cycle_complete = orig_cycle
+            assert rc.cycle_count >= 1
+
+        asyncio.run(_run())
+
     def test_robot_error_sets_fault(self, reset_singletons):
         from communication.cip_client import CIPClient
         from control.robot_controller import RobotController, RobotControlState
