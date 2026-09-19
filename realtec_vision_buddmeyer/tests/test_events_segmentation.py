@@ -89,9 +89,12 @@ class TestDetectionEventPlcData:
             selection_method="area_then_conf",
             mm_per_px=10.0,
             plc_area_unit="cm2",
+            vcp_offset_mm=0.0,
         )
         assert ev.detected is True
-        assert ev.angle_deg == 42.0
+        assert ev.centroid == (25.0, 25.0)
+        assert ev.axis_angle_deg == 42.0
+        assert 0.0 <= float(ev.angle_deg) < 360.0
         assert ev.area_px == 10000.0
         assert ev.selection_method == "area_then_conf"
         assert len(ev.all_detections_scaled) == 2
@@ -103,7 +106,7 @@ class TestDetectionEventPlcData:
         low_conf_big = _make_detection(confidence=0.6, area_px=10000.0, angle_deg=42.0)
         high_conf_tiny = _make_detection(confidence=0.95, area_px=200.0, angle_deg=10.0)
         result = DetectionResult(detections=[low_conf_big, high_conf_tiny])
-        ev = DetectionEvent.from_result(result, prioritize_area=True)
+        ev = DetectionEvent.from_result(result, prioritize_area=True, vcp_offset_mm=0.0)
         assert ev.detected is True
         assert ev.area_px == 10000.0
 
@@ -122,3 +125,25 @@ class TestDetectionEventPlcData:
         assert data["angle_deg"] == 0.0
         assert data["area_px"] == 0.0
         assert data["product_detected"] is True
+        assert data["centroid_x"] == 5.0
+        assert data["centroid_y"] == 5.0
+
+    def test_from_result_pick_is_vcpn_not_mask_centroid(self):
+        from detection.events import DetectionResult, DetectionEvent
+        from detection.mask_geometry import compute_vcp_pick, resolve_vcp_reference
+
+        det = _make_detection(confidence=0.9, area_px=1000.0, angle_deg=90.0)
+        result = DetectionResult(detections=[det])
+        roi = [0, 0, 50, 50]
+        ev = DetectionEvent.from_result(
+            result,
+            mm_per_px=1.0,
+            roi_enabled=True,
+            roi=roi,
+            vcp_offset_mm=10.0,
+        )
+        ref = resolve_vcp_reference("roi_top_mid", roi=roi, frame_wh=(50.0, 50.0))
+        expected = compute_vcp_pick(det.centroid, 90.0, 10.0, 1.0, ref)
+        assert ev.centroid == expected.vcp_n
+        assert abs(ev.angle_deg - expected.heading_deg) < 1e-6
+        assert ev.centroid != det.centroid

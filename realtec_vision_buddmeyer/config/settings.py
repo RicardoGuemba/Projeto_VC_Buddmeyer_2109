@@ -99,6 +99,21 @@ class DetectionSettings(BaseModel):
         default=15.0, ge=0.0,
         description="Tolerância px para considerar mesmo alvo entre frames",
     )
+    vcp_offset_mm: float = Field(
+        default=55.0,
+        ge=0.0,
+        description=(
+            "Offset do pico (VCPn) ao longo do eixo maior, em mm. "
+            "0 restaura a pega no centroide da máscara"
+        ),
+    )
+    vcp_reference: str = Field(
+        default="roi_top_mid",
+        description=(
+            "Referência do norte para escolher VCPn: roi_top_mid "
+            "(mediana do lado superior do ROI) ou fov_top_mid (X=W/2, Y=0)"
+        ),
+    )
     inference_max_consecutive_errors: int = Field(
         default=5, ge=1, le=50,
         description="Erros consecutivos antes de reiniciar worker de inferência",
@@ -139,6 +154,14 @@ class DetectionSettings(BaseModel):
         valid = {"cm2", "mm2", "px2"}
         if v not in valid:
             raise ValueError(f"plc_area_unit deve ser um de: {valid}")
+        return v
+
+    @field_validator("vcp_reference")
+    @classmethod
+    def validate_vcp_reference(cls, v: str) -> str:
+        valid = {"roi_top_mid", "fov_top_mid"}
+        if v not in valid:
+            raise ValueError(f"vcp_reference deve ser um de: {valid}")
         return v
 
     @field_validator("device")

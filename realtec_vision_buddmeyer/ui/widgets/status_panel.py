@@ -211,6 +211,13 @@ class StatusPanel(QWidget):
             "Exibe a região no vídeo e confina o centroide do pick ao retângulo"
         )
         roi_layout.addRow("", self._roi_enabled)
+        self._roi_show_vcp_ref = QCheckBox("Mostrar N e L")
+        self._roi_show_vcp_ref.setChecked(True)
+        self._roi_show_vcp_ref.setToolTip(
+            "Marca no ROI o norte (N) e o leste (L) a partir da mediana "
+            "do lado superior (referência das distâncias do VCPn)."
+        )
+        roi_layout.addRow("", self._roi_show_vcp_ref)
         self._roi_x = QSpinBox()
         self._roi_x.setRange(0, 9999)
         self._roi_x.setToolTip("X (px)")
@@ -236,6 +243,7 @@ class StatusPanel(QWidget):
         for spin in (self._roi_x, self._roi_y, self._roi_w, self._roi_h):
             spin.valueChanged.connect(lambda _=0: self.roi_changed.emit())
         self._roi_enabled.stateChanged.connect(lambda: self.roi_changed.emit())
+        self._roi_show_vcp_ref.stateChanged.connect(lambda: self.roi_changed.emit())
         layout.addWidget(roi_group)
         
         layout.addStretch()
@@ -307,7 +315,7 @@ class StatusPanel(QWidget):
     def update_detection(self, event: DetectionEvent) -> None:
         """Atualiza informações do pick selecionado e lista de outros objetos."""
         if event.detected:
-            self._det_class.setText(f"{event.class_name} (PICK)")
+            self._det_class.setText(event.class_name)
             self._det_confidence.setText(f"{event.confidence:.1%}")
 
             pick_scaled = None
@@ -408,6 +416,10 @@ class StatusPanel(QWidget):
             self._roi_w.value(),
             self._roi_h.value(),
         ]
+
+    def show_vcp_reference(self) -> bool:
+        """True quando o overlay deve marcar norte e ponto REF no ROI."""
+        return self._roi_show_vcp_ref.isChecked()
     
     def set_last_error(self, error: str) -> None:
         """Define último erro exibido (RF-06: UI informativa)."""

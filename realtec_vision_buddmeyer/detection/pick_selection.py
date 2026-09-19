@@ -113,7 +113,7 @@ def scale_detection_metrics(
         Dict com centroid_mm, area_cm2, area_mm2, area_px, area_plc, confidence, etc.
     """
     mm_per_px = float(mm_per_px) or 1.0
-    cx_px, cy_px = detection.centroid
+    cx_px, cy_px = detection.pick_xy
     if roi_enabled and roi and len(roi) == 4:
         cx_px, cy_px = clamp_centroid_for_pick(
             cx_px,
@@ -130,7 +130,9 @@ def scale_detection_metrics(
         "confidence": float(detection.confidence),
         "centroid_px": (float(cx_px), float(cy_px)),
         "centroid_mm": (float(cx_px) * mm_per_px, float(cy_px) * mm_per_px),
-        "angle_deg": float(detection.angle_deg) if detection.angle_deg is not None else None,
+        "angle_deg": float(detection.heading_deg)
+        if detection.heading_deg is not None
+        else (float(detection.angle_deg) if detection.angle_deg is not None else None),
         "area_px": area_px,
         "area_mm2": area_mm2,
         "area_cm2": area_cm2,

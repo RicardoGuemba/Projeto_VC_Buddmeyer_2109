@@ -18,7 +18,10 @@ from ui.overlay_constants import (
     PICK_LABEL_COLOR_BGR,
     PICK_MASK_COLOR_BGR,
     PICK_MASK_FILL_ALPHA,
-    format_centroid_metrics_summary,
+    VCP_MARKER_COLOR_BGR,
+    VCPN_COLOR_BGR,
+    VCP_REF_COLOR_BGR,
+    format_centroid_metrics_lines,
     is_pick_detection,
     opencv_safe_label,
 )
@@ -131,6 +134,20 @@ def centroid_label_origin(
     return x, y
 
 
+def vcp_vector_endpoints(
+    origin: Tuple[float, float],
+    vcp_n: Tuple[float, float],
+    *,
+    length_frac: float = 0.55,
+) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+    """Vetor no tamanho atual, a partir da origem (centroide) rumo ao VCPn."""
+    t = min(1.0, max(0.0, float(length_frac)))
+    ox, oy = float(origin[0]), float(origin[1])
+    dx = float(vcp_n[0]) - ox
+    dy = float(vcp_n[1]) - oy
+    return (ox, oy), (ox + t * dx, oy + t * dy)
+
+
 def draw_detection_masks_on_frame(
     frame: np.ndarray,
     detections: Sequence[Any],
@@ -146,13 +163,13 @@ def draw_detection_masks_on_frame(
     Retorna cópia do frame com overlay aplicado.
     """
     import cv2
-    import math
 
     if frame is None or not detections:
         return frame
 
     out = frame.copy()
     frame_h, frame_w = out.shape[:2]
+    hud_lines = None
 
     for det in ordered_detections_for_overlay(detections, pick):
         is_pick = is_pick_detection(det, pick)
@@ -188,49 +205,98 @@ def draw_detection_masks_on_frame(
             cv2.rectangle(out, (x1, y1), (x2, y2), color, thickness)
 
         axis_cx, axis_cy = det.centroid
-        pick_cx, pick_cy = axis_cx, axis_cy
+        vcp_n = getattr(det, "vcp_n", None)
+        pick_cx, pick_cy = (vcp_n if vcp_n is not None else (axis_cx, axis_cy))
+        axis_for_clamp = getattr(det, "angle_deg", None)
         if roi_enabled and roi and len(roi) == 4:
             pick_cx, pick_cy = clamp_centroid_for_pick(
-                axis_cx,
-                axis_cy,
+                pick_cx,
+                pick_cy,
                 tuple(roi),
-                angle_deg=getattr(det, "angle_deg", None) if is_pick else None,
+                angle_deg=axis_for_clamp if is_pick else None,
             )
         cx, cy = int(pick_cx), int(pick_cy)
-        cv2.circle(out, (cx, cy), 8 if is_pick else 6, color, 2)
-
-        if is_pick and getattr(det, "has_orientation", False) and getattr(det, "angle_deg", None) is not None:
-            angle = float(det.angle_deg or 0.0)
-            half = (
-                0.5 * float(det.major_axis_length)
-                if getattr(det, "major_axis_length", None)
-                else 0.5 * max(bbox.width, bbox.height)
-            )
-            dx = math.cos(math.radians(angle)) * half
-            dy = math.sin(math.radians(angle)) * half
-            p1 = (int(axis_cx - dx), int(axis_cy - dy))
-            p2 = (int(axis_cx + dx), int(axis_cy + dy))
-            cv2.line(out, p1, p2, (255, 0, 255), 3)
-            if abs(pick_cx - axis_cx) > 0.5 or abs(pick_cy - axis_cy) > 0.5:
-                cv2.circle(out, (int(axis_cx), int(axis_cy)), 4, (255, 255, 255), 1)
-
-        angle = getattr(det, "angle_deg", None) if getattr(det, "has_orientation", False) else None
-        metrics_text = format_centroid_metrics_summary(
-            pick_cx,
-            pick_cy,
-            det.effective_area_px,
-            angle,
-            mm_per_px,
-            is_pick=is_pick,
-            ascii_safe=True,
-        )
-        class_label = f"{det.class_name} {det.confidence:.0%}"
         if is_pick:
-            class_label += " [PICK]"
+            (vx0, vy0), (vx1, vy1) = vcp_vector_endpoints(
+                (axis_cx, axis_cy), (pick_cx, pick_cy),
+            )
+            cv2.arrowedLine(
+                out,
+                (int(vx0), int(vy0)),
+                (int(vx1), int(vy1)),
+                VCP_MARKER_COLOR_BGR,
+                3,
+                tipLength=0.35,
+            )
+            cv2.circle(out, (cx, cy), 8, VCPN_COLOR_BGR, -1)
 
-        draw_overlay_label(out, class_label, (x1, max(22, y1 - 8)), is_pick)
+        overlay_angle = getattr(det, "heading_deg", None)
+        if overlay_angle is None:
+            overlay_angle = getattr(det, "angle_deg", None) if getattr(det, "has_orientation", False) else None
+        if is_pick:
+            hud_lines = format_centroid_metrics_lines(
+                pick_cx,
+                pick_cy,
+                det.effective_area_px,
+                overlay_angle,
+                mm_per_px,
+                ascii_safe=True,
+                confidence=float(det.confidence),
+                class_name=str(det.class_name),
+            )
 
-        mx, my = centroid_label_origin(cx, cy, frame_h, frame_w)
-        draw_overlay_label(out, metrics_text, (mx, my), is_pick)
+    if hud_lines:
+        line_h = 18
+        for i, line in enumerate(hud_lines):
+            draw_overlay_label(out, line, (8, 22 + i * line_h), is_pick=True)
 
+    return out
+
+
+def draw_vcp_reference_on_frame(
+    frame: np.ndarray,
+    roi: Optional[Sequence[float]] = None,
+    *,
+    vcp_reference: str = "roi_top_mid",
+) -> np.ndarray:
+    """
+    Marca no frame o ponto REF e a rosa local: N (norte, -Y) e L (leste, +X).
+
+    Norte = topo da imagem (-Y). REF = mediana do lado superior do ROI,
+    ou FOV (W/2, 0) se a referência for fov_top_mid / ROI ausente.
+    """
+    import cv2
+
+    from detection.mask_geometry import resolve_vcp_reference
+
+    if frame is None:
+        return frame
+
+    out = frame.copy()
+    frame_h, frame_w = out.shape[:2]
+    ref_xy = resolve_vcp_reference(
+        vcp_reference,
+        roi=roi,
+        frame_wh=(float(frame_w), float(frame_h)),
+    )
+    rx = int(round(ref_xy[0]))
+    ry = int(round(ref_xy[1]))
+    rx = max(0, min(frame_w - 1, rx))
+    ry = max(0, min(frame_h - 1, ry))
+
+    color = VCP_REF_COLOR_BGR
+    arrow_len = 36
+    y_north = max(0, ry - arrow_len)
+    x_east = min(frame_w - 1, rx + arrow_len)
+    cv2.arrowedLine(out, (rx, ry + 8), (rx, y_north), color, 2, tipLength=0.35)
+    cv2.arrowedLine(out, (rx + 8, ry), (x_east, ry), color, 2, tipLength=0.35)
+    cv2.drawMarker(
+        out, (rx, ry), color, markerType=cv2.MARKER_CROSS, markerSize=16, thickness=2,
+    )
+    cv2.circle(out, (rx, ry), 6, color, 2)
+
+    n_origin = centroid_label_origin(rx, y_north, frame_h, frame_w, offset_x=8, offset_y=-4)
+    draw_overlay_label(out, "N", n_origin, is_pick=False)
+    l_origin = centroid_label_origin(x_east, ry, frame_h, frame_w, offset_x=8, offset_y=4)
+    draw_overlay_label(out, "L", l_origin, is_pick=False)
     return out

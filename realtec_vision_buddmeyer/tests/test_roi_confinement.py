@@ -66,10 +66,14 @@ class TestDetectionEventRoiConfinement:
             result,
             roi_enabled=True,
             roi=roi,
+            vcp_offset_mm=0.0,
         )
+        from preprocessing.roi_manager import clamp_centroid_for_pick
+
+        expected = clamp_centroid_for_pick(10.0, 10.0, tuple(roi), angle_deg=30.0)
         assert ev.detected is True
-        assert ev.centroid == (100.0, 100.0)
-        assert ev.all_detections_scaled[0]["centroid_px"] == (100.0, 100.0)
+        assert ev.centroid == expected
+        assert ev.all_detections_scaled[0]["centroid_px"] == expected
 
     def test_from_result_keeps_centroid_when_confinement_off(self):
         from detection.events import DetectionEvent, DetectionResult
@@ -80,6 +84,7 @@ class TestDetectionEventRoiConfinement:
             result,
             roi_enabled=False,
             roi=[100, 100, 80, 80],
+            vcp_offset_mm=0.0,
         )
         assert ev.centroid == (10.0, 10.0)
 

@@ -30,7 +30,7 @@ from detection.pick_selection import area_for_plc, select_pick_target
 from communication import CIPClient
 from control import RobotController
 
-from ui.detection_overlay import draw_detection_masks_on_frame
+from ui.detection_overlay import draw_detection_masks_on_frame, draw_vcp_reference_on_frame
 from ui.widgets.video_widget import VideoWidget
 from ui.widgets.status_panel import StatusPanel
 from ui.widgets.event_console import EventConsole
@@ -391,6 +391,8 @@ class OperationPage(QWidget):
         self._settings.preprocess.roi = list(coords)
         self._settings.preprocess.roi_enabled = enabled
         self._refresh_centroid_display()
+        if self._last_base_frame is not None:
+            self._refresh_video_with_detections()
         self._roi_persist_timer.start(500)
     
     def _sync_combo_to_settings(self) -> None:
@@ -1044,6 +1046,13 @@ class OperationPage(QWidget):
         y2 = max(y1 + 1, min(y + h, h_img))
         out = frame.copy()
         cv2.rectangle(out, (x1, y1), (x2, y2), (0, 255, 0), 2)  # BGR verde, 2px
+        if self._status_panel.show_vcp_reference():
+            vcp_ref = str(
+                getattr(self._settings.detection, "vcp_reference", "roi_top_mid")
+            )
+            out = draw_vcp_reference_on_frame(
+                out, [x, y, w, h], vcp_reference=vcp_ref,
+            )
         return out
 
     def _draw_detections_on_frame(self, frame, result) -> np.ndarray:

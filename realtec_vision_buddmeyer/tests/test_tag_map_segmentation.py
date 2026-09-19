@@ -41,5 +41,6 @@ class TestTagMapSegmentation:
 
         tm = TagMap()
         assert tm.validate_value("CentroidAngle", 45.0) is True
+        assert tm.validate_value("CentroidAngle", 270.0) is True
         assert tm.validate_value("CentroidAngle", 0) is True
         assert tm.validate_value("ObjectArea", 1234.56) is True

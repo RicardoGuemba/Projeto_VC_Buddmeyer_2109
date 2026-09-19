@@ -10,11 +10,8 @@ O objetivo é fornecer à plataforma de pick-and-place três informações
 por embalagem, cada uma derivada da máscara e, portanto, mais robusta
 do que o bounding box:
 
-1. **X, Y**: centróide geométrico da máscara (mais estável do que o
-   centro do bbox para formas irregulares/rotacionadas).
-2. **Ângulo do eixo maior**: orientação da embalagem em graus `[0, 180)`,
-   calculada via PCA (autodecomposição da matriz de covariância dos
-   pixels ativos da máscara).
+1. **X, Y**: ponto de pega **VCPn** (pico a `detection.vcp_offset_mm`, default 55 mm, do centroide da máscara no eixo maior, extremo mais perto do norte da ROI).
+2. **Ângulo**: heading da rosa `[0, 360)` do vetor C → VCPn (leste=0°, norte=90°, oeste=180°, sul=270°). O eixo maior interno permanece `[0, 180)` para clamp colinear.
 3. **Área (cm² na UI)**: contagem de pixels da máscara convertida via
    calibração; usada para priorização por paralaxe (maior área aparente
    = embalagem mais próxima da câmera). Método configurável em
@@ -33,9 +30,9 @@ do que o bounding box:
 │ SegmentationPostProcessor                                        │
 │     ↓  post_process_instance_segmentation (transformers)         │
 │     ↓  masks + scores + labels                                   │
-│ mask_geometry.compute_mask_geometry (PCA 2D)                     │
-│     ↓  centróide, área, ângulo, elongation                       │
-│ Detection (bbox, mask, angle_deg, area_px, centroid_override)    │
+│ mask_geometry.compute_mask_geometry + compute_vcp_pick           │
+│     ↓  C, eixo 0–180, VCPn, VCP_s, heading 0–360                 │
+│ Detection (centroid=C, vcp_n, heading_deg, angle_deg eixo)       │
 │     ↓                                                            │
 │ DetectionResult.select_pick_target (método configurável)           │
 │     ↓  overlay: todas as detecções; CLP: apenas o pick            │
@@ -100,8 +97,9 @@ frame. O método é configurável (`detection.pick_selection_method`):
 | `area_only` | Apenas maior área |
 | `confidence_only` | Apenas maior confiança |
 
-A UI desenha **todas** as embalagens com centroide (mm) e área (cm²);
-o alvo de pick é destacado com label "PICK". Ver
+A UI desenha **todas** as embalagens; o alvo de pick mostra vetor amarelo
+e VCPn vermelho. Classe, confiança, X, Y, área e rumo ficam empilhados
+no canto superior esquerdo (sem a palavra PICK). Ver
 [FEATURE_PICK_SELECTION_PARALLAX.md](FEATURE_PICK_SELECTION_PARALLAX.md).
 
 ## TAGs do CLP
@@ -110,7 +108,7 @@ Duas novas TAGs (tipo `REAL`, direção `WRITE`) foram adicionadas:
 
 | Tag lógica      | Nome PLC          | Descrição                           |
 |-----------------|-------------------|-------------------------------------|
-| `CentroidAngle` | `CENTROID_ANGLE`  | Ângulo do eixo maior, graus [0,180) |
+| `CentroidAngle` | `CENTROID_ANGLE`  | Heading de pega, graus [0, 360) |
 | `ObjectArea`    | `OBJECT_AREA`     | Área da embalagem (default **cm²**; ver `plc_area_unit`) |
 
 Quando `preprocess.roi_calibration_mm_per_px != 1`, a área no CLP segue

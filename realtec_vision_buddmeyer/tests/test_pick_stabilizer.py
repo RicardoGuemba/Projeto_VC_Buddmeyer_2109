@@ -42,3 +42,14 @@ class TestPickStabilizer:
         stab = PickStabilizer(stable_frames=2, centroid_epsilon_px=10.0)
         assert stab.update(_det(10.0, 10.0)) is None
         assert stab.update(_det(100.0, 100.0)) is None
+
+    def test_tracks_vcpn_not_mask_centroid(self):
+        from detection.pick_stabilizer import PickStabilizer
+
+        a = _det(100.0, 100.0)
+        a.vcp_n = (100.0, 45.0)
+        b = _det(100.0, 100.0)
+        b.vcp_n = (100.0, 155.0)
+        stab = PickStabilizer(stable_frames=2, centroid_epsilon_px=15.0)
+        assert stab.update(a) is None
+        assert stab.update(b) is None

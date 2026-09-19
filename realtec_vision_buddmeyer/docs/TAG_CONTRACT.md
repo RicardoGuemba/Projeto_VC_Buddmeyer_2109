@@ -24,7 +24,7 @@ O PRD sugere nomenclatura genérica (pc_*, plc_*). A implementação atual usa n
 | pc_cmd_valid | VisionDataSent | VisionCtrl_DataSent | BOOL | PC→CLP | Comando/dados enviados |
 | pc_x | CentroidX | CENTROID_X | REAL | PC→CLP | Coordenada X |
 | pc_y | CentroidY | CENTROID_Y | REAL | PC→CLP | Coordenada Y |
-| — | CentroidAngle | CENTROID_ANGLE | REAL | PC→CLP | Ângulo do eixo maior (graus, segmentação) |
+| — | CentroidAngle | CENTROID_ANGLE | REAL | PC→CLP | Heading de pega (graus, `[0, 360)`: leste=0, norte=90, oeste=180, sul=270). XY é o pico VCPn. |
 | — | ObjectArea | OBJECT_AREA | REAL | PC→CLP | Área da máscara (cm² por default; configurável) |
 | — | Confidence | CONFIDENCE | REAL | PC→CLP | Confiança (0-1) |
 | — | ProductDetected | PRODUCT_DETECTED | BOOL | PC→CLP | Produto detectado |
@@ -50,9 +50,9 @@ O PRD sugere nomenclatura genérica (pc_*, plc_*). A implementação atual usa n
 | VisionError | VisionCtrl_VisionError | BOOL | Erro no sistema |
 | VisionHeartbeat | VisionCtrl_Heartbeat | BOOL | Heartbeat (toggle) |
 | ProductDetected | PRODUCT_DETECTED | BOOL | Produto detectado |
-| CentroidX | CENTROID_X | REAL | Coordenada X do centroide. Com ROI ativo, valores fora são projetados ao ROI. |
-| CentroidY | CENTROID_Y | REAL | Coordenada Y do centroide. Mesma regra de clamp ao ROI. |
-| CentroidAngle | CENTROID_ANGLE | REAL | Ângulo do eixo maior da embalagem (graus, `[0, 180)`), via PCA da máscara |
+| CentroidX | CENTROID_X | REAL | Coordenada X do ponto de pega (VCPn, mm). Com ROI ativo, valores fora são projetados ao ROI ao longo do eixo maior. |
+| CentroidY | CENTROID_Y | REAL | Coordenada Y do ponto de pega (VCPn, mm). Mesma regra de clamp ao ROI. |
+| CentroidAngle | CENTROID_ANGLE | REAL | Heading C→VCPn, graus `[0, 360)` (leste=0, norte=90). O NX102 aceita REAL; o eixo do robô pode exigir wrap ±180 no Sysmac. |
 | ObjectArea | OBJECT_AREA | REAL | Área da máscara. Default: **cm²** (`detection.plc_area_unit`). Opções: mm², px². |
 | Confidence | CONFIDENCE | REAL | Confiança (0-1) |
 | DetectionCount | DETECTION_COUNT | INT | Contador de detecções |

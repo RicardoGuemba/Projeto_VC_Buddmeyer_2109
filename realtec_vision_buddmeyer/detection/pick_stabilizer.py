@@ -36,7 +36,7 @@ class PickStabilizer:
             self.reset()
             return None
 
-        cx, cy = detection.centroid
+        cx, cy = detection.pick_xy
         if self._anchor is None:
             self._anchor = (float(cx), float(cy))
             self._streak = 1

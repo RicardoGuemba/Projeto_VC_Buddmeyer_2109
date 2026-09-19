@@ -22,7 +22,7 @@ from core.exceptions import InferenceError
 from .model_loader import ModelLoader, TASK_INSTANCE_SEGMENTATION
 from .postprocess import PostProcessor
 from .segmentation_postprocess import SegmentationPostProcessor
-from .events import DetectionResult, DetectionEvent
+from .events import DetectionResult, DetectionEvent, attach_vcp_to_detection
 from .pick_stabilizer import PickStabilizer
 
 logger = get_logger("detection.engine")
@@ -864,6 +864,16 @@ class InferenceEngine(QObject):
         pre_cfg = self._settings.preprocess
         roi_enabled = bool(getattr(pre_cfg, "roi_enabled", False))
         roi = pre_cfg.roi if roi_enabled and pre_cfg.roi else None
+        vcp_offset = float(getattr(det_cfg, "vcp_offset_mm", 55.0))
+        vcp_ref = str(getattr(det_cfg, "vcp_reference", "roi_top_mid"))
+        for det in result.detections:
+            attach_vcp_to_detection(
+                det,
+                mm_per_px=mm_per_px,
+                offset_mm=vcp_offset,
+                roi=roi,
+                reference=vcp_ref,
+            )
 
         self.detection_result.emit(result)
 
@@ -878,6 +888,8 @@ class InferenceEngine(QObject):
                 plc_area_unit=det_cfg.plc_area_unit,
                 roi_enabled=roi_enabled,
                 roi=roi,
+                vcp_offset_mm=float(getattr(det_cfg, "vcp_offset_mm", 55.0)),
+                vcp_reference=str(getattr(det_cfg, "vcp_reference", "roi_top_mid")),
             )
             self.detection_event.emit(event)
             return
@@ -903,6 +915,8 @@ class InferenceEngine(QObject):
             plc_area_unit=det_cfg.plc_area_unit,
             roi_enabled=roi_enabled,
             roi=roi,
+            vcp_offset_mm=float(getattr(det_cfg, "vcp_offset_mm", 55.0)),
+            vcp_reference=str(getattr(det_cfg, "vcp_reference", "roi_top_mid")),
         )
 
         if event.detected:

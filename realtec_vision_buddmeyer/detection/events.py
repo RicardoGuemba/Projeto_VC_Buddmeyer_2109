@@ -9,8 +9,9 @@ do bbox e score:
 - mask            : máscara binária (H x W) no referencial do frame original
 - centroid        : centroide geométrico da máscara (se disponível), senão centro do bbox
 - angle_deg       : ângulo do eixo maior da embalagem em [0, 180) graus
-                    (referencial: eixo X da imagem, sentido horário por causa
-                    do Y invertido — convenção de imagem)
+                    (referencial de imagem OpenCV; usado no clamp colinear)
+- heading_deg     : rosa 0–360 (leste=0, norte=90) do vetor C → VCPn
+- vcp_n / vcp_s   : pico de pega e extremo oposto a `vcp_offset_mm` no eixo maior
 - area_px         : área da máscara em pixels²
 
 Esses campos dão ao CLP os três elementos que a plataforma de pick
@@ -31,6 +32,7 @@ from .pick_selection import (
     select_pick_target,
 )
 from preprocessing.roi_manager import clamp_centroid_for_pick
+from .mask_geometry import compute_vcp_pick, resolve_vcp_reference
 
 
 @dataclass
@@ -101,6 +103,9 @@ class Detection:
     area_px: Optional[float] = None              # pixels²
     major_axis_length: Optional[float] = None    # px (lado maior do retângulo)
     minor_axis_length: Optional[float] = None    # px (lado menor do retângulo)
+    vcp_n: Optional[Tuple[float, float]] = None  # pico de pega (px)
+    vcp_s: Optional[Tuple[float, float]] = None  # extremo oposto (px)
+    heading_deg: Optional[float] = None          # [0, 360) rosa C → VCPn
 
     @property
     def centroid(self) -> Tuple[float, float]:
@@ -108,6 +113,13 @@ class Detection:
         if self.centroid_override is not None:
             return self.centroid_override
         return self.bbox.center
+
+    @property
+    def pick_xy(self) -> Tuple[float, float]:
+        """Ponto de pega: VCPn se calculado, senão o centroide da máscara."""
+        if self.vcp_n is not None:
+            return self.vcp_n
+        return self.centroid
 
     @property
     def centroid_x(self) -> float:
@@ -146,6 +158,12 @@ class Detection:
         }
         if self.angle_deg is not None:
             out["angle_deg"] = float(self.angle_deg)
+        if self.heading_deg is not None:
+            out["heading_deg"] = float(self.heading_deg)
+        if self.vcp_n is not None:
+            out["vcp_n"] = list(self.vcp_n)
+        if self.vcp_s is not None:
+            out["vcp_s"] = list(self.vcp_s)
         if self.area_px is not None:
             out["area_px"] = float(self.area_px)
         return out
@@ -248,13 +266,43 @@ class DetectionResult:
         }
 
 
+def attach_vcp_to_detection(
+    detection: Detection,
+    *,
+    mm_per_px: float = 1.0,
+    offset_mm: float = 55.0,
+    roi: Optional[List[int]] = None,
+    frame_wh: Optional[Tuple[float, float]] = None,
+    reference: str = "roi_top_mid",
+) -> Detection:
+    """Preenche vcp_n / vcp_s / heading_deg in-place. Sem orientação, não altera."""
+    if detection.angle_deg is None:
+        return detection
+    if frame_wh is None and detection.mask is not None:
+        h, w = detection.mask.shape[:2]
+        frame_wh = (float(w), float(h))
+    ref = resolve_vcp_reference(reference, roi, frame_wh)
+    vcp = compute_vcp_pick(
+        detection.centroid,
+        float(detection.angle_deg),
+        offset_mm,
+        mm_per_px,
+        ref,
+    )
+    detection.vcp_n = vcp.vcp_n
+    detection.vcp_s = vcp.vcp_s
+    detection.heading_deg = vcp.heading_deg
+    return detection
+
+
 @dataclass
 class DetectionEvent:
     """
     Evento de detecção para comunicação com CLP.
 
-    Carrega os dados que a plataforma de pick precisa: X, Y (centroide),
-    ângulo da embalagem, área e metadados auxiliares.
+    `centroid` é o ponto de pega (VCPn). `angle_deg` é o heading 0–360
+    enviado em CENTROID_ANGLE. `axis_angle_deg` é o eixo maior [0, 180)
+    usado só no clamp colinear ao ROI.
     """
 
     detected: bool
@@ -263,6 +311,7 @@ class DetectionEvent:
     bbox: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0])
     centroid: Tuple[float, float] = (0.0, 0.0)
     angle_deg: Optional[float] = None
+    axis_angle_deg: Optional[float] = None
     area_px: Optional[float] = None
     source_id: str = ""
     frame_id: int = 0
@@ -285,6 +334,9 @@ class DetectionEvent:
         prioritize_area: Optional[bool] = None,
         roi_enabled: bool = False,
         roi: Optional[List[int]] = None,
+        vcp_offset_mm: float = 55.0,
+        vcp_reference: str = "roi_top_mid",
+        frame_wh: Optional[Tuple[float, float]] = None,
     ) -> "DetectionEvent":
         """
         Cria evento a partir de DetectionResult.
@@ -302,6 +354,16 @@ class DetectionEvent:
             confidence_weight=confidence_weight,
             area_weight=area_weight,
         )
+
+        for det in result.detections:
+            attach_vcp_to_detection(
+                det,
+                mm_per_px=mm_per_px,
+                offset_mm=vcp_offset_mm,
+                roi=roi if roi_enabled else None,
+                frame_wh=frame_wh,
+                reference=vcp_reference,
+            )
 
         all_scaled = scale_all_detections(
             result.detections,
@@ -322,10 +384,12 @@ class DetectionEvent:
                 all_detections_scaled=all_scaled,
             )
 
-        cx, cy = best.centroid
+        cx, cy = best.pick_xy
+        axis_angle = best.angle_deg
+        heading = best.heading_deg if best.heading_deg is not None else best.angle_deg
         if roi_enabled and roi and len(roi) == 4:
             cx, cy = clamp_centroid_for_pick(
-                cx, cy, tuple(roi), angle_deg=best.angle_deg,
+                cx, cy, tuple(roi), angle_deg=axis_angle,
             )
 
         return cls(
@@ -334,7 +398,8 @@ class DetectionEvent:
             confidence=best.confidence,
             bbox=best.bbox.to_list(),
             centroid=(cx, cy),
-            angle_deg=best.angle_deg,
+            angle_deg=heading,
+            axis_angle_deg=axis_angle,
             area_px=best.area_px,
             source_id=source_id,
             frame_id=result.frame_id,

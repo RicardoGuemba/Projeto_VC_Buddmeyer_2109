@@ -4,6 +4,9 @@
 # BGR (OpenCV / operation_page stream)
 PICK_MASK_COLOR_BGR = (0, 255, 128)       # verde-água — objeto selecionado
 OTHER_MASK_COLOR_BGR = (255, 210, 140)    # azul claro visível — demais objetos
+VCP_MARKER_COLOR_BGR = (0, 255, 255)      # amarelo — vetor na parte de cima do objeto
+VCPN_COLOR_BGR = (0, 0, 255)              # vermelho — ponto de pega VCPn
+VCP_REF_COLOR_BGR = (255, 255, 0)         # ciano — norte e ponto REF do ROI
 
 # Qt QColor (video_widget): R, G, B
 PICK_MASK_COLOR_QT = (0, 255, 128)
@@ -52,6 +55,51 @@ def opencv_safe_label(text: str) -> str:
     return out.encode("ascii", "ignore").decode("ascii")
 
 
+def format_centroid_metrics_lines(
+    cx_px: float,
+    cy_px: float,
+    area_px: float,
+    angle_deg,
+    mm_per_px: float = 1.0,
+    *,
+    is_pick: bool = False,
+    ascii_safe: bool = False,
+    confidence: float | None = None,
+    class_name: str | None = None,
+) -> list:
+    """Linhas de métricas para overlay vertical (classe, confiança, X, Y, área, ângulo)."""
+    mm = float(mm_per_px) or 1.0
+    cx_mm = float(cx_px) * mm
+    cy_mm = float(cy_px) * mm
+    area_cm2 = float(area_px) * (mm ** 2) / 100.0
+    lines: list = []
+    if class_name:
+        lines.append(str(class_name))
+    if confidence is not None:
+        lines.append(f"conf:{float(confidence):.0%}")
+    if ascii_safe:
+        lines.extend(
+            [
+                f"X:{cx_mm:.0f}",
+                f"Y:{cy_mm:.0f}",
+                f"A:{area_cm2:.1f}cm2",
+            ]
+        )
+        if angle_deg is not None:
+            lines.append(f"ang:{float(angle_deg):.0f}deg")
+        return [opencv_safe_label(line) for line in lines]
+    lines.extend(
+        [
+            f"X:{cx_mm:.0f}",
+            f"Y:{cy_mm:.0f}",
+            f"A:{area_cm2:.1f}cm²",
+        ]
+    )
+    if angle_deg is not None:
+        lines.append(f"∠{float(angle_deg):.0f}°")
+    return lines
+
+
 def format_centroid_metrics_summary(
     cx_px: float,
     cy_px: float,
@@ -61,29 +109,19 @@ def format_centroid_metrics_summary(
     *,
     is_pick: bool = False,
     ascii_safe: bool = False,
+    confidence: float | None = None,
+    class_name: str | None = None,
 ) -> str:
-    """Resumo compacto X, Y, área e ângulo junto ao centroide."""
-    mm = float(mm_per_px) or 1.0
-    cx_mm = float(cx_px) * mm
-    cy_mm = float(cy_px) * mm
-    area_cm2 = float(area_px) * (mm ** 2) / 100.0
-    if ascii_safe:
-        parts = [
-            f"X:{cx_mm:.0f}",
-            f"Y:{cy_mm:.0f}",
-            f"A:{area_cm2:.1f}cm2",
-        ]
-        if angle_deg is not None:
-            parts.append(f"ang:{float(angle_deg):.0f}deg")
-    else:
-        parts = [
-            f"X:{cx_mm:.0f}",
-            f"Y:{cy_mm:.0f}",
-            f"A:{area_cm2:.1f}cm²",
-        ]
-        if angle_deg is not None:
-            parts.append(f"∠{float(angle_deg):.0f}°")
-    text = " ".join(parts)
-    if is_pick:
-        text += PICK_COORD_SUFFIX
-    return opencv_safe_label(text) if ascii_safe else text
+    """Resumo compacto X, Y, área e ângulo (uma linha, p.ex. painel de estado)."""
+    lines = format_centroid_metrics_lines(
+        cx_px,
+        cy_px,
+        area_px,
+        angle_deg,
+        mm_per_px,
+        is_pick=is_pick,
+        ascii_safe=ascii_safe,
+        confidence=confidence,
+        class_name=class_name,
+    )
+    return " ".join(lines)

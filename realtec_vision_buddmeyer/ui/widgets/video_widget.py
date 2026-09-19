@@ -11,11 +11,9 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QSizePolicy
 from PySide6.QtCore import Qt, Signal, Slot, QTimer, QRect, QSize, QPointF
 from PySide6.QtGui import QImage, QPixmap, QPainter, QPen, QColor, QFont, QBrush, QPolygonF
 
-import math
-
-from config import get_settings
 from detection.events import Detection, DetectionResult
-from preprocessing.roi_manager import clamp_centroid_to_roi
+from coordinate.transform import get_coordinate_transform
+from ui.overlay_constants import format_centroid_metrics_lines
 
 
 class VideoWidget(QWidget):
@@ -234,72 +232,52 @@ class VideoWidget(QWidget):
             painter.setBrush(Qt.NoBrush)
             painter.drawRect(x1, y1, x2 - x1, y2 - y1)
 
-        # Centroide (prioriza o do mask quando existir)
         cx_f, cy_f = best_detection.centroid
-        cx = int(cx_f * scale_x) + offset_x
-        cy = int(cy_f * scale_y) + offset_y
-
-        painter.setBrush(QBrush(color))
+        pick_xy = getattr(best_detection, "pick_xy", None)
+        if pick_xy is None:
+            pick_xy = getattr(best_detection, "vcp_n", None) or (cx_f, cy_f)
+        px_f, py_f = float(pick_xy[0]), float(pick_xy[1])
+        length_frac = 0.55
+        vx1 = cx_f + length_frac * (px_f - cx_f)
+        vy1 = cy_f + length_frac * (py_f - cy_f)
+        yellow = QColor(255, 255, 0)
+        red = QColor(220, 0, 0)
+        p1x = int(cx_f * scale_x) + offset_x
+        p1y = int(cy_f * scale_y) + offset_y
+        p2x = int(vx1 * scale_x) + offset_x
+        p2y = int(vy1 * scale_y) + offset_y
+        pnx = int(px_f * scale_x) + offset_x
+        pny = int(py_f * scale_y) + offset_y
+        painter.setPen(QPen(yellow, 3))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawLine(p1x, p1y, p2x, p2y)
+        painter.setBrush(QBrush(red))
         painter.setPen(QPen(Qt.white, 2))
-        painter.drawEllipse(cx - 10, cy - 10, 20, 20)
-        painter.setPen(QPen(Qt.black, 2))
-        painter.drawLine(cx - 8, cy, cx + 8, cy)
-        painter.drawLine(cx, cy - 8, cx, cy + 8)
+        painter.drawEllipse(pnx - 8, pny - 8, 16, 16)
 
-        # Eixo maior (vetor que indica orientação da embalagem)
-        if best_detection.has_orientation:
-            self._draw_major_axis(
-                painter, best_detection, color, offset_x, offset_y, scale_x, scale_y,
-            )
-
-        # Centroide limitado ao ROI (amarelo)
-        roi = get_settings().preprocess.roi
-        if roi is not None and len(roi) == 4:
-            clamped_x, clamped_y = clamp_centroid_to_roi(
-                cx_f, cy_f, tuple(roi)
-            )
-            cx_clamped = int(clamped_x * scale_x) + offset_x
-            cy_clamped = int(clamped_y * scale_y) + offset_y
-            yellow = QColor(255, 255, 0)
-            painter.setBrush(QBrush(yellow))
-            painter.setPen(QPen(Qt.black, 2))
-            size = 12
-            diamond = QPolygonF([
-                QPointF(cx_clamped, cy_clamped - size),
-                QPointF(cx_clamped + size, cy_clamped),
-                QPointF(cx_clamped, cy_clamped + size),
-                QPointF(cx_clamped - size, cy_clamped),
-            ])
-            painter.drawPolygon(diamond)
-
-        # Labels
-        label = f"{best_detection.class_name} {best_detection.confidence:.0%}"
-        coord_label = f"({cx_f:.0f}, {cy_f:.0f})"
-        extra_parts: List[str] = []
-        if best_detection.angle_deg is not None:
-            extra_parts.append(f"{best_detection.angle_deg:.1f}°")
-        if best_detection.area_px is not None:
-            extra_parts.append(f"A={best_detection.area_px:.0f}px²")
-        extra_label = " | ".join(extra_parts)
+        heading = getattr(best_detection, "heading_deg", None)
+        if heading is None:
+            heading = best_detection.angle_deg
+        metric_lines = format_centroid_metrics_lines(
+            px_f,
+            py_f,
+            float(best_detection.effective_area_px),
+            heading,
+            get_coordinate_transform().mm_per_px,
+            confidence=float(best_detection.confidence),
+            class_name=str(best_detection.class_name),
+        )
 
         font = QFont("Segoe UI", 10, QFont.Bold)
         painter.setFont(font)
 
-        label_rect = QRect(x1, y1 - 22, max(len(label) * 9, 60), 20)
-        painter.fillRect(label_rect, color)
-        painter.setPen(QPen(Qt.black))
-        painter.drawText(label_rect, Qt.AlignCenter, label)
-
-        coord_rect = QRect(cx - 50, y2 + 5, 100, 18)
-        painter.fillRect(coord_rect, QColor(0, 0, 0, 180))
-        painter.setPen(QPen(Qt.white))
-        painter.drawText(coord_rect, Qt.AlignCenter, coord_label)
-
-        if extra_label:
-            extra_rect = QRect(cx - 90, y2 + 25, 180, 18)
-            painter.fillRect(extra_rect, QColor(0, 0, 0, 180))
-            painter.setPen(QPen(QColor(255, 255, 0)))
-            painter.drawText(extra_rect, Qt.AlignCenter, extra_label)
+        line_h = 18
+        line_w = 140
+        for i, line in enumerate(metric_lines):
+            line_rect = QRect(8, 8 + i * line_h, line_w, line_h)
+            painter.fillRect(line_rect, QColor(0, 0, 0, 180))
+            painter.setPen(QPen(Qt.white))
+            painter.drawText(line_rect, Qt.AlignVCenter | Qt.AlignLeft, line)
 
     @staticmethod
     def _select_best(detections: List[Detection]) -> Detection:
@@ -353,45 +331,6 @@ class VideoWidget(QWidget):
                 poly.append(QPointF(px, py))
             painter.drawPolygon(poly)
 
-    def _draw_major_axis(
-        self,
-        painter: QPainter,
-        detection: Detection,
-        color: QColor,
-        offset_x: int,
-        offset_y: int,
-        scale_x: float,
-        scale_y: float,
-    ) -> None:
-        """Desenha o vetor do eixo maior (ângulo da embalagem) passando pelo centroide.
-
-        O comprimento do segmento é o lado maior do retângulo mínimo ajustado
-        à máscara, o que faz o eixo casar exatamente com as bordas do objeto.
-        Fallback para o bbox quando o dado não está disponível.
-        """
-        angle = float(detection.angle_deg or 0.0)
-        cx_f, cy_f = detection.centroid
-        if detection.major_axis_length is not None and detection.major_axis_length > 0:
-            half = 0.5 * float(detection.major_axis_length)
-        else:
-            half = 0.5 * max(detection.bbox.width, detection.bbox.height)
-        dx = math.cos(math.radians(angle)) * half
-        dy = math.sin(math.radians(angle)) * half
-
-        p1x = int((cx_f - dx) * scale_x) + offset_x
-        p1y = int((cy_f - dy) * scale_y) + offset_y
-        p2x = int((cx_f + dx) * scale_x) + offset_x
-        p2y = int((cy_f + dy) * scale_y) + offset_y
-
-        pen = QPen(QColor(255, 0, 255), 3)  # magenta, alto contraste
-        painter.setPen(pen)
-        painter.setBrush(Qt.NoBrush)
-        painter.drawLine(p1x, p1y, p2x, p2y)
-
-        # Ponta da seta no lado "positivo" do eixo
-        head = 10
-        painter.drawEllipse(p2x - 5, p2y - 5, 10, 10)
-    
     def _draw_fps(self, painter: QPainter) -> None:
         """Desenha o FPS no canto."""
         font = QFont("Segoe UI", 12, QFont.Bold)

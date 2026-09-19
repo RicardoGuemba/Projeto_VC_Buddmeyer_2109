@@ -7,7 +7,7 @@ Captura N frames de uma câmera USB OU de um arquivo de vídeo, executa
 inferência com o modelo Mask2Former (`model_best`) em MPS/CPU, e valida:
   - O modelo carregou com task == instance_segmentation.
   - Para cada frame com embalagem no FOV, há pelo menos 1 detecção.
-  - A melhor detecção possui centróide (x, y), ângulo [0, 180) e área > 0.
+  - A melhor detecção possui centróide (x, y), eixo [0, 180), heading VCPn [0, 360) e área > 0.
 
 Uso (câmera USB - hardware obrigatório):
     python -m scripts.smoke_test_segmentation --source usb --frames 10 --camera 0
@@ -156,7 +156,6 @@ def _open_video(path: str):
 
 def _draw_overlay(frame: np.ndarray, detection) -> np.ndarray:
     import cv2
-    import math
 
     out = frame.copy()
     if detection.has_mask and detection.mask is not None:
@@ -167,26 +166,41 @@ def _draw_overlay(frame: np.ndarray, detection) -> np.ndarray:
         )
         cv2.drawContours(out, contours, -1, (0, 255, 0), 2)
     cx_f, cy_f = detection.centroid
-    cx, cy = int(cx_f), int(cy_f)
-    cv2.circle(out, (cx, cy), 8, (0, 255, 255), -1)
+    vcp = getattr(detection, "vcp_n", None)
+    yellow = (0, 255, 255)
+    red = (0, 0, 255)
+    if vcp is not None:
+        t = 0.55
+        x1 = cx_f + t * (vcp[0] - cx_f)
+        y1 = cy_f + t * (vcp[1] - cy_f)
+        cv2.arrowedLine(
+            out,
+            (int(cx_f), int(cy_f)),
+            (int(x1), int(y1)),
+            yellow,
+            3,
+            tipLength=0.35,
+        )
+        cv2.circle(out, (int(vcp[0]), int(vcp[1])), 8, red, -1)
+    else:
+        cv2.circle(out, (int(cx_f), int(cy_f)), 8, red, -1)
 
-    if detection.angle_deg is not None:
-        if detection.major_axis_length is not None and detection.major_axis_length > 0:
-            half = 0.5 * float(detection.major_axis_length)
-        else:
-            half = 0.5 * max(detection.bbox.width, detection.bbox.height)
-        dx = math.cos(math.radians(detection.angle_deg)) * half
-        dy = math.sin(math.radians(detection.angle_deg)) * half
-        p1 = (int(cx_f - dx), int(cy_f - dy))
-        p2 = (int(cx_f + dx), int(cy_f + dy))
-        cv2.line(out, p1, p2, (255, 0, 255), 3)
-
-    label = f"{detection.class_name} {detection.confidence:.0%}"
-    if detection.angle_deg is not None:
-        label += f" | ang={detection.angle_deg:.1f}"
+    heading = detection.heading_deg
+    if heading is None:
+        heading = detection.angle_deg
+    lines = [
+        str(detection.class_name),
+        f"conf:{float(detection.confidence):.0%}",
+    ]
+    if heading is not None:
+        lines.append(f"ang:{float(heading):.0f}deg")
     if detection.area_px is not None:
-        label += f" | A={int(detection.area_px)}"
-    cv2.putText(out, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        lines.append(f"A:{int(detection.area_px)}")
+    for i, line in enumerate(lines):
+        cv2.putText(
+            out, line, (8, 22 + i * 18),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2,
+        )
     return out
 
 
@@ -293,14 +307,29 @@ def run(args) -> int:
             if result.has_detections:
                 ok_frames += 1
                 best = result.best_by_priority()
+                from detection.events import attach_vcp_to_detection
+                attach_vcp_to_detection(
+                    best,
+                    mm_per_px=1.0,
+                    offset_mm=55.0,
+                    frame_wh=(float(frame.shape[1]), float(frame.shape[0])),
+                    reference="fov_top_mid",
+                )
                 assert 0.0 <= (best.angle_deg or 0.0) < 180.0
+                assert 0.0 <= (best.heading_deg or 0.0) < 360.0
                 assert (best.area_px or 0.0) > 0
                 cx, cy = best.centroid
                 assert 0 <= cx < frame.shape[1]
                 assert 0 <= cy < frame.shape[0]
+                if best.vcp_n is not None:
+                    dx = best.vcp_n[0] - cx
+                    dy = best.vcp_n[1] - cy
+                    dist_px = (dx * dx + dy * dy) ** 0.5
+                    assert abs(dist_px - 55.0) < 2.0
                 print(
                     f"        -> best: class={best.class_name} conf={best.confidence:.2f} "
-                    f"xy=({cx:.1f}, {cy:.1f}) ang={best.angle_deg:.1f}° area={best.area_px:.0f}"
+                    f"xy=({cx:.1f}, {cy:.1f}) vcpn={best.vcp_n} hdg={best.heading_deg:.1f}° "
+                    f"area={best.area_px:.0f}"
                 )
                 last_frame_annotated = _draw_overlay(frame, best)
 

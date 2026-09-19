@@ -583,7 +583,7 @@ class CIPClient(QObject):
             confidence: Confiança (0-1)
             detection_count: Número de detecções
             processing_time: Tempo de processamento (ms)
-            angle_deg: Ângulo do eixo maior da embalagem em graus [0, 180)
+            angle_deg: Ângulo de pega em graus [0, 360), rosa leste=0 norte=90
             area: Área da embalagem (px² ou mm² conforme calibração)
 
         Returns:

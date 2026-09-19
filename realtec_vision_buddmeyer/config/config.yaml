@@ -33,6 +33,8 @@ detection:
   plc_area_unit: cm2
   stable_frames: 3
   centroid_epsilon_px: 15.0
+  vcp_offset_mm: 55.0
+  vcp_reference: roi_top_mid
   inference_max_consecutive_errors: 5
 preprocess:
   profile: default
@@ -63,6 +65,7 @@ robot_control:
   pick_timeout: 30.0
   place_timeout: 30.0
   authorization_timeout: 30.0
+  cycle_complete_timeout: 3.0
   bypass_authorization: false
 reliability:
   production_mode: false
@@ -72,6 +75,7 @@ reliability:
   kiosk_fullscreen: false
   stream_auto_restart: true
   inference_auto_restart: true
+  require_field_safety_tags: false
 logging:
   max_bytes: 50000000
   backup_count: 10

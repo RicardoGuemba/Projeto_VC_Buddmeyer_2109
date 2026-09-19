@@ -116,7 +116,7 @@ class TagMap:
             plc_name="CENTROID_ANGLE",
             tag_type=TagType.REAL,
             direction=TagDirection.WRITE,
-            description="Ângulo do eixo maior da embalagem (graus, [0, 180))",
+            description="Ângulo de pega (graus, [0, 360): leste=0, norte=90)",
         ),
         "ObjectArea": TagDefinition(
             logical_name="ObjectArea",

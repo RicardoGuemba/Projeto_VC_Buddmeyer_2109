@@ -35,8 +35,9 @@ contagem de pixels da máscara (e não a área do retângulo mínimo).
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -243,3 +244,84 @@ def major_axis_endpoints(
     dy = float(np.sin(angle_rad)) * half
     cx, cy = geometry.centroid
     return (cx - dx, cy - dy), (cx + dx, cy + dy)
+
+
+@dataclass(frozen=True)
+class VcpPick:
+    """Pico de pega (VCPn), extremo oposto (VCP_s) e heading da rosa 0–360."""
+
+    vcp_n: Tuple[float, float]
+    vcp_s: Tuple[float, float]
+    heading_deg: float  # [0, 360): leste=0, norte=90, oeste=180, sul=270
+
+
+def compass_heading_deg(dx: float, dy_img: float) -> float:
+    """Rosa: 0 leste, 90 norte (topo da imagem), 180 oeste, 270 sul."""
+    return float(math.degrees(math.atan2(-float(dy_img), float(dx)))) % 360.0
+
+
+def resolve_vcp_reference(
+    reference: str = "roi_top_mid",
+    roi: Optional[Sequence[float]] = None,
+    frame_wh: Optional[Tuple[float, float]] = None,
+) -> Tuple[float, float]:
+    """Ponto de referência do 'norte': mediana do topo do ROI, senão FOV."""
+    mode = (reference or "roi_top_mid").strip().lower()
+    if mode != "fov_top_mid" and roi is not None and len(roi) == 4:
+        x, y, w, _h = (float(roi[0]), float(roi[1]), float(roi[2]), float(roi[3]))
+        return (x + 0.5 * w, y)
+    if frame_wh is not None:
+        return (float(frame_wh[0]) * 0.5, 0.0)
+    if roi is not None and len(roi) == 4:
+        x, y, w, _h = (float(roi[0]), float(roi[1]), float(roi[2]), float(roi[3]))
+        return (x + 0.5 * w, y)
+    return (0.0, 0.0)
+
+
+def compute_vcp_pick(
+    centroid: Tuple[float, float],
+    axis_deg: float,
+    offset_mm: float,
+    mm_per_px: float,
+    reference: Tuple[float, float],
+) -> VcpPick:
+    """
+    VCPn / VCP_s a ``offset_mm`` do centroide no eixo maior (ângulo OpenCV 0–180).
+
+    VCPn é o extremo mais próximo de ``reference`` (empate: menor Y).
+    Heading é a rosa 0–360 do vetor C → VCPn.
+    ``offset_mm == 0`` devolve pick = C; heading aponta o eixo para o norte da imagem.
+    """
+    cx, cy = float(centroid[0]), float(centroid[1])
+    scale = float(mm_per_px) if float(mm_per_px) else 1.0
+    offset = max(0.0, float(offset_mm))
+    s_px = offset / scale
+    rad = math.radians(float(axis_deg) % 180.0)
+    ux, uy = math.cos(rad), math.sin(rad)
+    p_plus = (cx + s_px * ux, cy + s_px * uy)
+    p_minus = (cx - s_px * ux, cy - s_px * uy)
+    rx, ry = float(reference[0]), float(reference[1])
+
+    def _dist2(p: Tuple[float, float]) -> float:
+        return (p[0] - rx) ** 2 + (p[1] - ry) ** 2
+
+    d_plus, d_minus = _dist2(p_plus), _dist2(p_minus)
+    if d_plus < d_minus - 1e-12:
+        vcp_n, vcp_s = p_plus, p_minus
+    elif d_minus < d_plus - 1e-12:
+        vcp_n, vcp_s = p_minus, p_plus
+    elif p_plus[1] <= p_minus[1]:
+        vcp_n, vcp_s = p_plus, p_minus
+    else:
+        vcp_n, vcp_s = p_minus, p_plus
+
+    dx, dy = vcp_n[0] - cx, vcp_n[1] - cy
+    if abs(dx) < 1e-12 and abs(dy) < 1e-12:
+        if -uy > 1e-12 or (abs(uy) <= 1e-12 and ux >= 0.0):
+            heading = compass_heading_deg(ux, uy)
+        else:
+            heading = compass_heading_deg(-ux, -uy)
+    else:
+        heading = compass_heading_deg(dx, dy)
+
+    return VcpPick(vcp_n=vcp_n, vcp_s=vcp_s, heading_deg=heading)

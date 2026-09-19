@@ -55,8 +55,24 @@ class TestDetectionOverlay:
         pick = format_centroid_metrics_summary(
             10.0, 20.0, 500.0, None, mm_per_px=1.0, is_pick=True,
         )
-        assert "(pick)" in pick
+        assert "PICK" not in pick.upper()
+        assert "(pick)" not in pick
         assert "∠" not in pick
+
+    def test_format_centroid_metrics_lines_are_stacked(self):
+        from ui.overlay_constants import format_centroid_metrics_lines
+
+        lines = format_centroid_metrics_lines(
+            100.0, 50.0, 10000.0, 45.0, mm_per_px=10.0, ascii_safe=True,
+            confidence=0.9, class_name="Embalagem",
+        )
+        assert lines[0] == "Embalagem"
+        assert lines[1] == "conf:90%"
+        assert lines[2].startswith("X:")
+        assert lines[3].startswith("Y:")
+        assert lines[4].startswith("A:")
+        assert lines[5].startswith("ang:")
+        assert all("PICK" not in line.upper() for line in lines)
 
     def test_ordered_puts_pick_last(self):
         from ui.detection_overlay import ordered_detections_for_overlay
@@ -141,5 +157,40 @@ class TestDetectionOverlay:
         )
         axis_x, axis_y = int(pick.centroid[0]), int(pick.centroid[1])
         pick_x, pick_y = 100, 175
-        assert out[pick_y, pick_x].any() != 0
-        assert out[axis_y, axis_x].any() != 0
+        ring = out[pick_y - 10:pick_y + 11, pick_x - 10:pick_x + 11]
+        assert ring.any() != 0
+        tip_x = int(axis_x + 0.55 * (pick_x - axis_x))
+        assert out[axis_y - 4:axis_y + 5, axis_x - 4:axis_x + 5].any() != 0
+        assert out[pick_y - 4:pick_y + 5, tip_x - 4:tip_x + 5].any() != 0
+
+    def test_pick_circle_at_vcpn(self):
+        from ui.detection_overlay import draw_detection_masks_on_frame
+
+        frame = np.zeros((200, 200, 3), dtype=np.uint8)
+        pick = _det(100.0, 100.0, 40, 1600, conf=0.95)
+        pick.vcp_n = (100.0, 45.0)
+        pick.vcp_s = (100.0, 155.0)
+        pick.heading_deg = 90.0
+        out = draw_detection_masks_on_frame(frame, [pick], pick, mm_per_px=1.0)
+        assert out[45 - 10:45 + 11, 100 - 10:100 + 11].any() != 0
+        b, g, r = [int(v) for v in out[45, 100]]
+        assert r >= 200 and g < 80 and b < 80
+        cx, cy = int(pick.centroid[0]), int(pick.centroid[1])
+        assert out[70:85, 98:103].any() != 0
+        assert out[cy - 3:cy + 4, cx - 3:cx + 4].any() != 0
+
+    def test_inferred_hud_fixed_top_left_without_pick_word(self):
+        from ui.detection_overlay import draw_detection_masks_on_frame
+
+        frame = np.zeros((200, 200, 3), dtype=np.uint8)
+        pick = _det(150.0, 150.0, 30, 900, conf=0.91)
+        pick.vcp_n = (150.0, 120.0)
+        out = draw_detection_masks_on_frame(frame, [pick], pick, mm_per_px=1.0)
+        hud = out[0:110, 0:90]
+        assert hud.any() != 0
+        far_from_object = out[5:25, 5:80]
+        assert far_from_object.any() != 0
+        # Sem rótulo colado ao bbox: faixa acima do objeto, à direita do HUD.
+        above_bbox = out[int(pick.bbox.y1) - 12:int(pick.bbox.y1) - 2, 100:140]
+        if above_bbox.size:
+            assert not above_bbox.any()

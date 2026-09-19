@@ -14,7 +14,13 @@ from .model_loader import (
 )
 from .postprocess import PostProcessor
 from .segmentation_postprocess import SegmentationPostProcessor
-from .mask_geometry import MaskGeometry, compute_mask_geometry, major_axis_endpoints
+from .mask_geometry import (
+    MaskGeometry,
+    VcpPick,
+    compute_mask_geometry,
+    compute_vcp_pick,
+    major_axis_endpoints,
+)
 from .pick_selection import (
     PickSelectionMethod,
     select_pick_target,
@@ -28,7 +34,9 @@ __all__ = [
     "PostProcessor",
     "SegmentationPostProcessor",
     "MaskGeometry",
+    "VcpPick",
     "compute_mask_geometry",
+    "compute_vcp_pick",
     "major_axis_endpoints",
     "BoundingBox",
     "Detection",
